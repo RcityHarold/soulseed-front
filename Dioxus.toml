@@ -1,0 +1,18 @@
+﻿[application]
+name = "soulseed-console"
+default_platform = "web"
+out_dir = "dist"
+asset_dir = "public"
+
+[web.app]
+title = "Soulseed 控制台"
+base_path = "/"
+
+[web.watcher]
+watch_path = ["apps/console/src", "assets"]
+reload_html = true
+
+[web.dev-server]
+port = 5173
+host = "0.0.0.0"
+hot_reload = true

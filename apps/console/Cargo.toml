@@ -1,0 +1,30 @@
+﻿[package]
+name = "soulseed-console"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+once_cell = { workspace = true }
+dioxus = { workspace = true }
+dioxus-web = { workspace = true }
+dioxus-router = { workspace = true }
+dioxus-signals = { workspace = true }
+dioxus-logger = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+reqwest = { workspace = true }
+gloo-storage = { workspace = true }
+gloo-timers = { workspace = true }
+console_error_panic_hook = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+tracing = { workspace = true }
+soulseed-agi-core-models = { workspace = true }
+web-sys = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dotenvy = { workspace = true }
