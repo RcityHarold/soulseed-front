@@ -1,8 +1,8 @@
 use serde_json::json;
 use soulseed_agi_core_models::{
     AIId, AccessClass, AwarenessAnchor, AwarenessDegradationReason, AwarenessEvent,
-    AwarenessEventType, AwarenessFork, ClarifyLimits, ClarifyPlan, ClarifyQuestion,
-    ConversationScenario, CorrelationId, CycleId, DecisionBudgetEstimate, DecisionExplain,
+    AwarenessEventType, AwarenessFork, AwarenessCycleId, ClarifyLimits, ClarifyPlan, ClarifyQuestion,
+    ConversationScenario, CorrelationId, DecisionBudgetEstimate, DecisionExplain,
     DecisionPath, DecisionPlan, DecisionRationale, DialogueEvent, DialogueEventType, EnvelopeHead,
     EventId, HumanId, MessageId, MessagePointer, SessionId, Snapshot, Subject, SubjectRef,
     TenantId, ToolInvocation, ToolPlan, ToolPlanBarrier, ToolPlanEdge, ToolPlanNode, ToolResult,
@@ -113,7 +113,7 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             cycle_id: "cyc-clarify-001".into(),
             lane: AceLane::Clarify,
             status: AceCycleStatus::Running,
-            anchor: clarify_anchor.clone(),
+            anchor: Some(clarify_anchor.clone()),
             budget: Some(AceBudget {
                 tokens_allowed: Some(6_000),
                 tokens_spent: Some(1_450),
@@ -124,7 +124,7 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             pending_injections: vec![],
             decision_path: Some(build_clarify_decision_path(
                 clarify_anchor,
-                CycleId::new(9_001),
+                AwarenessCycleId::new(9_001),
             )),
             metadata: Some(json!({
                 "stage": "question",
@@ -136,7 +136,7 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             cycle_id: "cyc-tool-002".into(),
             lane: AceLane::Tool,
             status: AceCycleStatus::Completed,
-            anchor: tool_anchor.clone(),
+            anchor: Some(tool_anchor.clone()),
             budget: Some(AceBudget {
                 tokens_allowed: Some(8_000),
                 tokens_spent: Some(5_600),
@@ -145,7 +145,10 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             }),
             latest_sync_point: None,
             pending_injections: vec![],
-            decision_path: Some(build_tool_decision_path(tool_anchor, CycleId::new(9_002))),
+            decision_path: Some(build_tool_decision_path(
+                tool_anchor,
+                AwarenessCycleId::new(9_002),
+            )),
             metadata: Some(json!({
                 "tool_plan": "doc.search -> summarizer",
                 "last_tool": "doc.search",
@@ -154,7 +157,10 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
     ]
 }
 
-fn build_clarify_decision_path(anchor: AwarenessAnchor, cycle_id: CycleId) -> DecisionPath {
+fn build_clarify_decision_path(
+    anchor: AwarenessAnchor,
+    cycle_id: AwarenessCycleId,
+) -> DecisionPath {
     DecisionPath {
         anchor,
         awareness_cycle_id: cycle_id,
@@ -191,7 +197,7 @@ fn build_clarify_decision_path(anchor: AwarenessAnchor, cycle_id: CycleId) -> De
     }
 }
 
-fn build_tool_decision_path(anchor: AwarenessAnchor, cycle_id: CycleId) -> DecisionPath {
+fn build_tool_decision_path(anchor: AwarenessAnchor, cycle_id: AwarenessCycleId) -> DecisionPath {
     DecisionPath {
         anchor,
         awareness_cycle_id: cycle_id,
@@ -314,6 +320,7 @@ fn build_message_event(timestamp_ms: i64) -> DialogueEvent {
         sequence_number: 1,
         trigger_event_id: None,
         temporal_pattern_id: None,
+        causal_links: Vec::new(),
         reasoning_trace: None,
         reasoning_confidence: None,
         reasoning_strategy: None,
@@ -328,6 +335,10 @@ fn build_message_event(timestamp_ms: i64) -> DialogueEvent {
         real_time_priority: None,
         notification_targets: None,
         live_stream_id: None,
+        growth_stage: None,
+        processing_latency_ms: None,
+        influence_score: None,
+        community_impact: None,
         evidence_pointer: None,
         content_digest_sha256: None,
         blob_ref: None,
@@ -369,6 +380,7 @@ fn build_tool_call_event(timestamp_ms: i64) -> DialogueEvent {
         sequence_number: 2,
         trigger_event_id: Some(EventId::new(10_000)),
         temporal_pattern_id: None,
+        causal_links: Vec::new(),
         reasoning_trace: Some("clarify -> gather_evidence".to_string()),
         reasoning_confidence: Some(0.8),
         reasoning_strategy: Some("plan_tool_chain".to_string()),
@@ -383,6 +395,10 @@ fn build_tool_call_event(timestamp_ms: i64) -> DialogueEvent {
         real_time_priority: None,
         notification_targets: None,
         live_stream_id: None,
+        growth_stage: None,
+        processing_latency_ms: None,
+        influence_score: None,
+        community_impact: None,
         evidence_pointer: None,
         content_digest_sha256: None,
         blob_ref: None,
@@ -432,6 +448,7 @@ fn build_tool_result_event(timestamp_ms: i64) -> DialogueEvent {
         sequence_number: 3,
         trigger_event_id: Some(EventId::new(10_001)),
         temporal_pattern_id: None,
+        causal_links: Vec::new(),
         reasoning_trace: Some("RAG > clarify > summarize".to_string()),
         reasoning_confidence: Some(0.72),
         reasoning_strategy: Some("retrieve_then_answer".to_string()),
@@ -446,6 +463,10 @@ fn build_tool_result_event(timestamp_ms: i64) -> DialogueEvent {
         real_time_priority: None,
         notification_targets: None,
         live_stream_id: None,
+        growth_stage: None,
+        processing_latency_ms: None,
+        influence_score: None,
+        community_impact: None,
         evidence_pointer: None,
         content_digest_sha256: None,
         blob_ref: None,
@@ -489,7 +510,7 @@ fn build_decision_awareness(timestamp_ms: i64) -> AwarenessEvent {
         event_id: EventId::new(20_001),
         event_type: AwarenessEventType::DecisionRouted,
         occurred_at_ms: timestamp_ms,
-        awareness_cycle_id: CycleId::new(9_001),
+        awareness_cycle_id: AwarenessCycleId::new(9_001),
         parent_cycle_id: None,
         collab_scope_id: None,
         barrier_id: Some("clarify_lane".to_string()),
@@ -513,7 +534,7 @@ fn build_live_awareness(timestamp_ms: i64, event_id: u64) -> AwarenessEvent {
         event_id: EventId::new(event_id),
         event_type: AwarenessEventType::HumanInjectionReceived,
         occurred_at_ms: timestamp_ms,
-        awareness_cycle_id: CycleId::new(9_100),
+        awareness_cycle_id: AwarenessCycleId::new(9_100),
         parent_cycle_id: None,
         collab_scope_id: Some("live-feed".to_string()),
         barrier_id: None,

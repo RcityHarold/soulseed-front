@@ -3,9 +3,8 @@ use serde_json::Value;
 
 pub use soulseed_agi_core_models::{
     AccessClass, AwarenessAnchor, AwarenessDegradationReason, AwarenessEvent, AwarenessEventType,
-    AwarenessFork, ConversationScenario, DecisionBudgetEstimate, DecisionExplain, DecisionPath,
-    DecisionPlan, DecisionRationale, DialogueEvent, DialogueEventType, SyncPointKind,
-    SyncPointReport, ToolInvocation, ToolResult,
+    ConversationScenario, DecisionPath, DecisionPlan, DialogueEvent, DialogueEventType,
+    SyncPointKind, SyncPointReport,
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -67,8 +66,8 @@ pub struct AceCycleSummary {
     pub cycle_id: String,
     pub lane: AceLane,
     pub status: AceCycleStatus,
-    #[serde(default)]
-    pub anchor: AwarenessAnchor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<AwarenessAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<AceBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

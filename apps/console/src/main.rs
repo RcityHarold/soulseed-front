@@ -61,23 +61,18 @@ fn report_client_error(context: &str, err: &ClientError) {
     error!(%context, ?err, status = ?err.status(), "api bootstrap error");
 }
 
-fn App(cx: Scope) -> Element {
-    let app_state = use_signal(cx, AppState::default);
+#[component]
+fn App() -> Element {
+    let app_state = use_signal(AppState::default);
 
-    if let Some(cfg) = APP_CONFIG.get() {
-        if app_state.read().tenant_id.is_none() {
-            app_state.write().tenant_id = cfg.default_tenant_id.clone();
-        }
-    }
+    use_context_provider(|| app_state.clone());
 
-    use_context_provider(cx, || app_state.clone());
-
-    cx.render(rsx! {
+    rsx! {
         div { class: "relative",
             Router::<Route> {}
             NotificationCenter {}
         }
-    })
+    }
 }
 
 #[derive(Clone, Routable, Debug, PartialEq)]
@@ -86,13 +81,14 @@ enum Route {
     Dashboard {},
 }
 
-fn Dashboard(cx: Scope) -> Element {
+#[component]
+fn Dashboard() -> Element {
     let api_endpoint = APP_CONFIG
         .get()
         .map(|c| c.api_base_url.clone())
         .unwrap_or_else(|| "未配置 API 地址".to_string());
 
-    cx.render(rsx! {
+    rsx! {
         div { class: "app-shell space-y-4",
             section { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
                 h1 { class: "text-xl font-semibold text-slate-900", "Soulseed 控制台" }
@@ -108,5 +104,5 @@ fn Dashboard(cx: Scope) -> Element {
             ExplainDiagnosticPanel {}
             InteractionPanel {}
         }
-    })
+    }
 }

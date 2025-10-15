@@ -1,14 +1,15 @@
-﻿use crate::hooks::ace::use_ace_cycles;
+
+use crate::hooks::ace::use_ace_cycles;
 use crate::models::{AceCycleStatus, AceCycleSummary, AceLane};
 use crate::state::{use_app_actions, use_app_state, AppActions};
 use dioxus::prelude::*;
 
-pub fn AcePanel(cx: Scope) -> Element {
-    use_ace_cycles(cx);
+#[component]
+pub fn AcePanel() -> Element {
+    use_ace_cycles();
 
-    let actions = use_app_actions(cx);
-    let app_state = use_app_state(cx);
-    let ace_state = app_state.read().ace.clone();
+    let actions = use_app_actions();
+    let ace_state = use_app_state().read().ace.clone();
 
     let body = if ace_state.is_loading {
         rsx! { p { class: "text-xs text-slate-500", "正在加载 ACE 周期..." } }
@@ -54,39 +55,80 @@ struct CycleListProps {
     actions: AppActions,
 }
 
-fn CycleList(cx: Scope<CycleListProps>) -> Element {
+impl PartialEq for CycleListProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for CycleListProps {}
+
+#[component]
+fn CycleList(props: CycleListProps) -> Element {
     rsx! {
         div { class: "md:w-1/3 space-y-2",
-            for cycle in cx.props.cycles.iter() {
-                let cycle_id = cycle.cycle_id.clone();
-                let is_active = Some(&cycle.cycle_id) == cx.props.selected_cycle_id.as_ref();
-                let card_class = if is_active {
-                    "border-slate-900 bg-slate-900 text-white"
-                } else {
-                    "border-slate-200 bg-white text-slate-800 hover:border-slate-400"
-                };
+            for cycle in props.cycles.iter().cloned() {
+                CycleListItem {
+                    key: cycle.cycle_id.clone(),
+                    cycle,
+                    selected_cycle_id: props.selected_cycle_id.clone(),
+                    actions: props.actions.clone(),
+                }
+            }
+        }
+    }
+}
 
-                let actions = cx.props.actions.clone();
+#[derive(Props, Clone)]
+#[props(no_eq)]
+struct CycleListItemProps {
+    cycle: AceCycleSummary,
+    selected_cycle_id: Option<String>,
+    actions: AppActions,
+}
 
-                button {
-                    key: format!("cycle-{}", cycle.cycle_id),
-                    class: format!(
-                        "w-full rounded-lg border px-3 py-2 text-left text-xs shadow-sm transition-colors {}",
-                        card_class
-                    ),
-                    onclick: move |_| actions.clone().select_ace_cycle(Some(cycle_id.clone())),
-                    div { class: "flex items-center justify-between",
-                        span { class: "font-semibold", "{cycle.cycle_id}" }
-                        span { class: "text-[11px]", "{format_status(&cycle.status)}" }
-                    }
-                    p { class: "mt-1", "Lane: {format_lane(&cycle.lane)}" }
-                    if let Some(budget) = cycle.budget.as_ref() {
-                        div { class: "mt-1 flex flex-wrap gap-2 text-[11px]",
-                            span { class: "rounded bg-violet-100 px-2 py-0.5 text-violet-700 font-mono", "Tokens {budget.tokens_spent.unwrap_or(0)} / {budget.tokens_allowed.unwrap_or(0)}" }
-                            if let Some(allowed) = budget.walltime_ms_allowed {
-                                span { class: "rounded bg-indigo-100 px-2 py-0.5 text-indigo-700 font-mono", "Wall {budget.walltime_ms_used.unwrap_or(0)} / {allowed} ms" }
-                            }
-                        }
+impl PartialEq for CycleListItemProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for CycleListItemProps {}
+
+#[component]
+fn CycleListItem(props: CycleListItemProps) -> Element {
+    let is_active = props
+        .selected_cycle_id
+        .as_ref()
+        .map(|selected| selected == &props.cycle.cycle_id)
+        .unwrap_or(false);
+
+    let card_class = if is_active {
+        "border-slate-900 bg-slate-900 text-white"
+    } else {
+        "border-slate-200 bg-white text-slate-800 hover:border-slate-400"
+    };
+
+    let cycle_id = props.cycle.cycle_id.clone();
+    let actions = props.actions.clone();
+
+    rsx! {
+        button {
+            class: format!(
+                "w-full rounded-lg border px-3 py-2 text-left text-xs shadow-sm transition-colors {}",
+                card_class
+            ),
+            onclick: move |_| actions.select_ace_cycle(Some(cycle_id.clone())),
+            div { class: "flex items-center justify-between",
+                span { class: "font-semibold", "{props.cycle.cycle_id}" }
+                span { class: "text-[11px]", "{format_status(&props.cycle.status)}" }
+            }
+            p { class: "mt-1", "Lane: {format_lane(&props.cycle.lane)}" }
+            if let Some(budget) = props.cycle.budget.as_ref() {
+                div { class: "mt-1 flex flex-wrap gap-2 text-[11px]",
+                    span { class: "rounded bg-violet-100 px-2 py-0.5 text-violet-700 font-mono", "Tokens {budget.tokens_spent.unwrap_or(0)} / {budget.tokens_allowed.unwrap_or(0)}" }
+                    if let Some(allowed) = budget.walltime_ms_allowed {
+                        span { class: "rounded bg-indigo-100 px-2 py-0.5 text-indigo-700 font-mono", "Wall {budget.walltime_ms_used.unwrap_or(0)} / {allowed} ms" }
                     }
                 }
             }
@@ -100,8 +142,17 @@ struct CycleDetailProps {
     cycle: Option<AceCycleSummary>,
 }
 
-fn CycleDetail(cx: Scope<CycleDetailProps>) -> Element {
-    let Some(cycle) = cx.props.cycle.clone() else {
+impl PartialEq for CycleDetailProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for CycleDetailProps {}
+
+#[component]
+fn CycleDetail(props: CycleDetailProps) -> Element {
+    let Some(cycle) = props.cycle.clone() else {
         return rsx! {
             div { class: "md:w-2/3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
                 p { class: "text-xs text-slate-500 italic", "请选择一个 ACE 周期" }

@@ -1,3 +1,4 @@
+
 use crate::state::{use_app_actions, use_app_state};
 use dioxus::prelude::*;
 
@@ -20,9 +21,9 @@ impl ToastKind {
     }
 }
 
-#[derive(Props)]
+#[derive(Props, Clone)]
 #[props(no_eq)]
-pub struct ToastProps<'a> {
+pub struct ToastProps {
     pub kind: ToastKind,
     pub title: String,
     pub message: String,
@@ -31,24 +32,33 @@ pub struct ToastProps<'a> {
     #[props(default)]
     pub details: Vec<(String, String)>,
     #[props(optional)]
-    pub on_close: Option<EventHandler<'a, MouseEvent>>,
+    pub on_close: Option<EventHandler<MouseEvent>>,
 }
 
-pub fn Toast<'a>(cx: Scope<'a, ToastProps<'a>>) -> Element {
-    let (container_class, accent_text) = cx.props.kind.accent_classes();
+impl PartialEq for ToastProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
 
-    cx.render(rsx! {
+impl Eq for ToastProps {}
+
+#[component]
+pub fn Toast(props: ToastProps) -> Element {
+    let (container_class, accent_text) = props.kind.accent_classes();
+
+    rsx! {
         div { class: format!("pointer-events-auto rounded-lg border-l-4 p-4 shadow-lg {}", container_class),
             div { class: "flex items-start justify-between gap-4",
                 div { class: "space-y-1",
-                    h3 { class: format!("text-sm font-semibold {}", accent_text), "{cx.props.title}" }
-                    if let Some(ref ctx) = cx.props.context {
+                    h3 { class: format!("text-sm font-semibold {}", accent_text), "{props.title}" }
+                    if let Some(ref ctx) = props.context {
                         p { class: "text-[11px] text-slate-500", "{ctx}" }
                     }
-                    p { class: "text-xs text-slate-700", "{cx.props.message}" }
-                    if !cx.props.details.is_empty() {
+                    p { class: "text-xs text-slate-700", "{props.message}" }
+                    if !props.details.is_empty() {
                         ul { class: "mt-2 space-y-1 text-[11px] text-slate-500",
-                            for (label, value) in cx.props.details.iter() {
+                            for (label, value) in props.details.iter() {
                                 li {
                                     span { class: "font-medium", "{label}: " }
                                     span { class: "font-mono break-all", "{value}" }
@@ -57,7 +67,7 @@ pub fn Toast<'a>(cx: Scope<'a, ToastProps<'a>>) -> Element {
                         }
                     }
                 }
-                if let Some(handler) = cx.props.on_close.as_ref() {
+                if let Some(handler) = props.on_close.as_ref() {
                     button {
                         class: "rounded bg-slate-200 px-2 py-1 text-[11px] text-slate-600 transition hover:bg-slate-300",
                         onclick: handler.clone(),
@@ -66,16 +76,15 @@ pub fn Toast<'a>(cx: Scope<'a, ToastProps<'a>>) -> Element {
                 }
             }
         }
-    })
+    }
 }
 
-pub fn NotificationCenter(cx: Scope) -> Element {
-    let actions = use_app_actions(cx);
-    let state = use_app_state(cx);
-    let snapshot = state.read().clone();
-    drop(state);
+#[component]
+pub fn NotificationCenter() -> Element {
+    let actions = use_app_actions();
+    let snapshot = use_app_state().read().clone();
 
-    let mut toasts: Vec<LazyNodes> = Vec::new();
+    let mut toasts: Vec<Element> = Vec::new();
 
     if let Some(error) = snapshot.operation.error.clone() {
         let mut details = Vec::new();
@@ -97,7 +106,7 @@ pub fn NotificationCenter(cx: Scope) -> Element {
                 kind: ToastKind::Error,
                 title: context_label,
                 message: error,
-                details: details,
+                details,
                 on_close: move |_| app_actions.clone().clear_operation_status(),
             }
         });
@@ -193,12 +202,14 @@ pub fn NotificationCenter(cx: Scope) -> Element {
     }
 
     if toasts.is_empty() {
-        return None;
+        return rsx! { Fragment {} };
     }
 
-    cx.render(rsx! {
+    rsx! {
         div { class: "pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-3",
-            for toast in toasts { toast }
+            for toast in toasts {
+                {toast}
+            }
         }
-    })
+    }
 }

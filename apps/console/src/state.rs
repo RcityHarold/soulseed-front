@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::TimeoutFuture;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
@@ -253,7 +253,7 @@ pub struct AppActions {
 
 impl AppActions {
     pub fn set_tenant(&self, tenant: Option<String>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.tenant_id = tenant;
         state.timeline.clear();
         state.timeline.filters.clear();
@@ -265,7 +265,7 @@ impl AppActions {
     }
 
     pub fn set_session(&self, session: Option<String>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.session_id = session;
         state.timeline.clear();
         state.timeline.filters.clear();
@@ -278,42 +278,42 @@ impl AppActions {
 
     pub fn set_scenario(&self, scenario: Option<ConversationScenario>) {
         if self.state.read().scenario_filter != scenario {
-            let mut state = self.state.write();
+            let mut state = self.state.write_unchecked();
             state.scenario_filter = scenario;
             state.timeline.clear();
         }
     }
 
     pub fn set_timeline_loading(&self, loading: bool) {
-        self.state.write().timeline.is_loading = loading;
+        self.state.write_unchecked().timeline.is_loading = loading;
     }
 
     pub fn set_timeline_error(&self, message: Option<String>) {
-        self.state.write().timeline.error = message;
+        self.state.write_unchecked().timeline.error = message;
     }
 
     pub fn toggle_participant_role(&self, role: &str) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.timeline.filters.toggle_participant_role(role);
     }
 
     pub fn toggle_access_class(&self, access_class: &str) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.timeline.filters.toggle_access_class(access_class);
     }
 
     pub fn toggle_degradation_reason(&self, reason: &str) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.timeline.filters.toggle_degradation_reason(reason);
     }
 
     pub fn toggle_awareness_type(&self, event_type: &str) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.timeline.filters.toggle_awareness_type(event_type);
     }
 
     pub fn clear_timeline_filters(&self) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.timeline.filters.clear();
     }
 
@@ -323,7 +323,7 @@ impl AppActions {
             return;
         }
 
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         let entry = state.timeline.tags.entry(event_id).or_default();
         if !entry
             .iter()
@@ -334,7 +334,7 @@ impl AppActions {
     }
 
     pub fn remove_event_tag(&self, event_id: u64, tag: &str) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         if let Some(entry) = state.timeline.tags.get_mut(&event_id) {
             entry.retain(|existing| existing != tag);
             if entry.is_empty() {
@@ -344,27 +344,29 @@ impl AppActions {
     }
 
     pub fn playback_sample_timeline(&self) {
-        let actions = self.clone();
         #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(async move {
-            use crate::fixtures::timeline::sample_timeline_data;
-            use gloo_timers::future::TimeoutFuture;
+        {
+            let actions = self.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                use crate::fixtures::timeline::sample_timeline_data;
+                use gloo_timers::future::TimeoutFuture;
 
-            let (events, awareness) = sample_timeline_data();
-            actions.reset_timeline();
-            actions.set_timeline_loading(true);
+                let (events, awareness) = sample_timeline_data();
+                actions.reset_timeline();
+                actions.set_timeline_loading(true);
 
-            for event in events {
-                TimeoutFuture::new(200).await;
-                actions.append_timeline(vec![event], Vec::new(), None);
-            }
+                for event in events {
+                    TimeoutFuture::new(200).await;
+                    actions.append_timeline(vec![event], Vec::new(), None);
+                }
 
-            if !awareness.is_empty() {
-                actions.append_timeline(Vec::new(), awareness, None);
-            }
+                if !awareness.is_empty() {
+                    actions.append_timeline(Vec::new(), awareness, None);
+                }
 
-            actions.set_operation_success("时间线回放完成".into());
-        });
+                actions.set_operation_success("时间线回放完成".into());
+            });
+        }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -383,7 +385,7 @@ impl AppActions {
         mut awareness: Vec<AwarenessEvent>,
         next_cursor: Option<String>,
     ) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
 
         for event in events.drain(..) {
             if !state
@@ -424,11 +426,11 @@ impl AppActions {
     }
 
     pub fn set_context_loading(&self, loading: bool) {
-        self.state.write().context.is_loading = loading;
+        self.state.write_unchecked().context.is_loading = loading;
     }
 
     pub fn set_context_error(&self, message: Option<String>) {
-        self.state.write().context.error = message;
+        self.state.write_unchecked().context.error = message;
     }
 
     pub fn set_context_bundle(
@@ -436,7 +438,7 @@ impl AppActions {
         bundle: Option<ContextBundleView>,
         explain_indices: Option<ExplainIndices>,
     ) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.context.bundle = bundle;
         state.context.explain_indices = explain_indices;
         state.context.is_loading = false;
@@ -444,26 +446,26 @@ impl AppActions {
     }
 
     pub fn set_ace_loading(&self, loading: bool) {
-        self.state.write().ace.is_loading = loading;
+        self.state.write_unchecked().ace.is_loading = loading;
     }
 
     pub fn set_ace_error(&self, message: Option<String>) {
-        self.state.write().ace.error = message;
+        self.state.write_unchecked().ace.error = message;
     }
 
     pub fn set_ace_cycles(&self, cycles: Vec<AceCycleSummary>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.ace.cycles = cycles;
         state.ace.is_loading = false;
         state.ace.error = None;
     }
 
     pub fn select_ace_cycle(&self, cycle_id: Option<String>) {
-        self.state.write().ace.selected_cycle_id = cycle_id;
+        self.state.write_unchecked().ace.selected_cycle_id = cycle_id;
     }
 
     pub fn set_operation_success(&self, message: String) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.operation.last_message = Some(message);
         state.operation.error = None;
         state.operation.last_status = None;
@@ -472,7 +474,7 @@ impl AppActions {
     }
 
     pub fn set_operation_error(&self, message: String) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.operation.error = Some(message);
         state.operation.last_message = None;
         state.operation.last_status = None;
@@ -487,7 +489,7 @@ impl AppActions {
         context: impl Into<String>,
         detail: Option<String>,
     ) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         let context_label = context.into();
         let message = detail.unwrap_or_else(|| http_status_advice(status).to_string());
 
@@ -499,12 +501,12 @@ impl AppActions {
     }
 
     pub fn clear_operation_status(&self) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.operation = OperationState::default();
     }
 
     pub fn update_cycle_metadata(&self, cycle_id: Option<String>, addition: Value) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         if state.ace.cycles.is_empty() {
             return;
         }
@@ -526,7 +528,7 @@ impl AppActions {
     }
 
     pub fn set_graph_root(&self, root: Option<u64>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         if state.graph.query.root_event_id != root {
             state.graph.query.root_event_id = root;
             state.graph.is_loading = false;
@@ -535,19 +537,20 @@ impl AppActions {
     }
 
     pub fn set_graph_loading(&self, loading: bool) {
-        self.state.write().graph.is_loading = loading;
+        self.state.write_unchecked().graph.is_loading = loading;
     }
 
     pub fn set_graph_error(&self, message: Option<String>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
+        let has_error = message.is_some();
         state.graph.error = message;
-        if message.is_some() {
+        if has_error {
             state.graph.is_loading = false;
         }
     }
 
     pub fn set_graph_data(&self, causal: Option<CausalGraphView>, recall: Vec<RecallResultView>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.graph.causal = causal;
         state.graph.recall = recall;
         state.graph.is_loading = false;
@@ -555,13 +558,14 @@ impl AppActions {
     }
 
     pub fn set_workspace_loading(&self, loading: bool) {
-        self.state.write().workspace.is_loading = loading;
+        self.state.write_unchecked().workspace.is_loading = loading;
     }
 
     pub fn set_workspace_error(&self, message: Option<String>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
+        let has_error = message.is_some();
         state.workspace.error = message;
-        if message.is_some() {
+        if has_error {
             state.workspace.is_loading = false;
         }
     }
@@ -572,7 +576,7 @@ impl AppActions {
             normalize_workspace_tenant(tenant);
         }
 
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.workspace.tenants = normalized;
         state.workspace.is_loading = false;
         state.workspace.error = None;
@@ -584,26 +588,30 @@ impl AppActions {
     }
 
     pub fn set_session_pin(&self, tenant_id: &str, session_id: &str, pinned: bool) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         if let Some(tenant) = state
             .workspace
             .tenants
             .iter_mut()
             .find(|tenant| tenant.tenant_id == tenant_id)
         {
-            if let Some(session) = tenant
+            if let Some(index) = tenant
                 .recent_sessions
-                .iter_mut()
-                .find(|session| session.session_id == session_id)
+                .iter()
+                .position(|session| session.session_id == session_id)
             {
-                session.pinned = pinned;
-                update_pinned_sessions(tenant, session.clone());
+                let session_clone = {
+                    let session = &mut tenant.recent_sessions[index];
+                    session.pinned = pinned;
+                    session.clone()
+                };
+                update_pinned_sessions(tenant, session_clone);
             }
         }
     }
 
     pub fn set_live_connected(&self, connected: bool) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.live_stream.is_connected = connected;
         if connected {
             state.live_stream.error = None;
@@ -611,22 +619,22 @@ impl AppActions {
     }
 
     pub fn set_live_error(&self, message: Option<String>) {
-        let mut state = self.state.write();
+        let mut state = self.state.write_unchecked();
         state.live_stream.error = message;
         state.live_stream.is_connected = false;
     }
 
     pub fn record_live_event(&self, event_id: u64) {
-        self.state.write().live_stream.last_event_id = Some(event_id);
+        self.state.write_unchecked().live_stream.last_event_id = Some(event_id);
     }
 
     pub fn reset_timeline(&self) {
-        self.state.write().timeline.clear();
+        self.state.write_unchecked().timeline.clear();
     }
 
     pub fn update_next_cursor(&self, cursor: Option<String>) {
         if let Some(cursor) = cursor {
-            self.state.write().timeline.next_cursor = Some(cursor);
+            self.state.write_unchecked().timeline.next_cursor = Some(cursor);
         }
     }
 }
@@ -775,11 +783,11 @@ fn merge_metadata(existing: Option<Value>, addition: Value) -> Option<Value> {
     }
 }
 
-pub fn use_app_state(cx: &ScopeState) -> AppSignal {
-    use_context::<AppSignal>(cx).expect("AppState context not provided")
+pub fn use_app_state() -> AppSignal {
+    use_context::<AppSignal>()
 }
 
-pub fn use_app_actions(cx: &ScopeState) -> AppActions {
-    let state = use_app_state(cx);
+pub fn use_app_actions() -> AppActions {
+    let state = use_app_state();
     AppActions { state }
 }

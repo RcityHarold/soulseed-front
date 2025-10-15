@@ -25,6 +25,8 @@ wasm-bindgen-futures = { workspace = true }
 tracing = { workspace = true }
 soulseed-agi-core-models = { workspace = true }
 web-sys = { workspace = true }
+ time = { workspace = true }
+uuid = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dotenvy = { workspace = true }

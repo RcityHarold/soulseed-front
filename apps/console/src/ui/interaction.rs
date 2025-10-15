@@ -1,18 +1,18 @@
+
 use crate::fixtures::timeline::{make_dialogue_event_from_text, make_injection_metadata};
-use crate::state::{use_app_actions, use_app_state, AppActions};
+use crate::state::{use_app_actions, use_app_state, AppActions, OperationState};
 use dioxus::prelude::*;
 
-pub fn InteractionPanel(cx: Scope) -> Element {
-    let actions = use_app_actions(cx);
-    let app_state = use_app_state(cx);
-    let operation_state = app_state.read().operation.clone();
-    drop(app_state);
+#[component]
+pub fn InteractionPanel() -> Element {
+    let actions = use_app_actions();
+    let operation_state = use_app_state().read().operation.clone();
 
-    let message_input = use_signal(cx, || String::new());
-    let message_seq = use_signal(cx, || 1u64);
+    let mut message_input = use_signal(|| String::new());
+    let mut message_seq = use_signal(|| 1u64);
 
-    let injection_input = use_signal(cx, || String::new());
-    let injection_seq = use_signal(cx, || 1u64);
+    let mut injection_input = use_signal(|| String::new());
+    let mut injection_seq = use_signal(|| 1u64);
 
     let on_submit_message = {
         let actions = actions.clone();
@@ -102,18 +102,25 @@ pub fn InteractionPanel(cx: Scope) -> Element {
 #[derive(Props, Clone)]
 #[props(no_eq)]
 struct OperationStatusProps {
-    status: crate::state::OperationState,
+    status: OperationState,
     actions: AppActions,
 }
 
-fn OperationStatus(cx: Scope<OperationStatusProps>) -> Element {
-    let status = &cx.props.status;
+impl PartialEq for OperationStatusProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
 
-    if let Some(ref err) = status.error {
-        let context_label = status.context.clone();
-        let status_detail = status.last_status.map(|code| format!("HTTP 状态: {code}"));
-        let trace_detail = status.last_trace_id.clone();
-        let actions = cx.props.actions.clone();
+impl Eq for OperationStatusProps {}
+
+#[component]
+fn OperationStatus(props: OperationStatusProps) -> Element {
+    if let Some(ref err) = props.status.error {
+        let context_label = props.status.context.clone();
+        let status_detail = props.status.last_status.map(|code| format!("HTTP 状态: {code}"));
+        let trace_detail = props.status.last_trace_id.clone();
+        let actions = props.actions.clone();
 
         return rsx! {
             div { class: "space-y-1 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700",
@@ -139,9 +146,9 @@ fn OperationStatus(cx: Scope<OperationStatusProps>) -> Element {
         };
     }
 
-    if let Some(ref msg) = status.last_message {
-        let context_label = status.context.clone();
-        let actions = cx.props.actions.clone();
+    if let Some(ref msg) = props.status.last_message {
+        let context_label = props.status.context.clone();
+        let actions = props.actions.clone();
         return rsx! {
             div { class: "flex items-start justify-between gap-2 rounded border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700",
                 div { class: "space-y-1",

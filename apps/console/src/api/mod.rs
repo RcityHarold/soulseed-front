@@ -1,10 +1,7 @@
 use std::sync::Arc;
-use std::time::Duration;
-
-use anyhow::Context;
 use reqwest::{header, Method, StatusCode};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -12,6 +9,7 @@ use crate::config::AppConfig;
 
 pub type ClientResult<T> = Result<T, ClientError>;
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct ThinWaistClient {
     inner: reqwest::Client,
@@ -19,15 +17,18 @@ pub struct ThinWaistClient {
     base_url: String,
 }
 
+#[allow(dead_code)]
 impl ThinWaistClient {
     pub fn new(config: AppConfig) -> ClientResult<Self> {
         let timeout = config.request_timeout;
         let base_url = normalize_base_url(&config.api_base_url);
 
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("failed to build reqwest client")?;
+        let mut builder = reqwest::Client::builder();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            builder = builder.timeout(timeout);
+        }
+        let client = builder.build().map_err(ClientError::from)?;
 
         Ok(Self {
             inner: client,
@@ -245,7 +246,7 @@ impl ThinWaistClient {
         let builder = self
             .request(Method::GET, &path, Some(tenant_id))?
             .header(header::ACCEPT, "text/event-stream");
-        builder.build().context("failed to build SSE request")
+        builder.build().map_err(ClientError::from)
     }
 
     fn request(
@@ -306,13 +307,9 @@ fn normalize_base_url(input: &str) -> String {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ApiEnvelope<T> {
     pub success: bool,
-    #[serde(default)]
     pub data: Option<T>,
-    #[serde(default)]
     pub error: Option<ApiErrorBody>,
-    #[serde(default)]
     pub trace_id: Option<String>,
-    #[serde(default)]
     pub duration_ms: Option<u64>,
 }
 
@@ -326,10 +323,20 @@ pub struct ApiErrorBody {
     pub status: Option<StatusCode>,
 }
 
+#[allow(dead_code)]
 impl ApiErrorBody {
     fn with_status(mut self, status: StatusCode) -> Self {
         self.status = Some(status);
         self
+    }
+}
+
+impl std::fmt::Display for ApiErrorBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(status) => write!(f, "{} {}: {}", status, self.code, self.message),
+            None => write!(f, "{}: {}", self.code, self.message),
+        }
     }
 }
 
@@ -347,6 +354,7 @@ pub enum ClientError {
     UnexpectedStatus { status: StatusCode, body: Vec<u8> },
 }
 
+#[allow(dead_code)]
 impl ClientError {
     pub fn status(&self) -> Option<StatusCode> {
         match self {

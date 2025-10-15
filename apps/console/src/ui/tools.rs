@@ -8,8 +8,9 @@ use crate::state::use_app_state;
 use dioxus::prelude::*;
 use serde_json::Value;
 
-pub fn ToolTracePanel(cx: Scope) -> Element {
-    let app_state = use_app_state(cx);
+#[component]
+pub fn ToolTracePanel() -> Element {
+    let app_state = use_app_state();
     let snapshot = app_state.read();
     let timeline_events = snapshot.timeline.events.clone();
     let cycles = snapshot.ace.cycles.clone();
@@ -57,26 +58,26 @@ pub fn ToolTracePanel(cx: Scope) -> Element {
                         tbody { class: "divide-y divide-slate-100",
                             for trace in traces.iter() {
                                 tr {
-                                    td { class: TD_CLASS, format!("#{}", trace.first_event_id) }
-                                    td { class: TD_CLASS, &trace.tool_id }
-                                    td { class: TD_CLASS, &trace.call_id }
+                                    td { class: TD_CLASS, {format!("#{}", trace.first_event_id)} }
+                                    td { class: TD_CLASS, "{trace.tool_id}" }
+                                    td { class: TD_CLASS, "{trace.call_id}" }
                                     td { class: TD_CLASS,
-                                        span { class: status_class(trace.success), detail_label(trace.success) }
+                                        span { class: status_class(trace.success), "{detail_label(trace.success)}" }
                                     }
-                                    td { class: TD_CLASS, trace.model.clone().unwrap_or_else(|| "-".into()) }
-                                    td { class: TD_CLASS, format_tokens(trace.prompt_tokens, trace.completion_tokens) }
-                                    td { class: TD_CLASS, format_duration(trace.duration_ms) }
+                                    td { class: TD_CLASS, {trace.model.clone().unwrap_or_else(|| "-".into())} }
+                                    td { class: TD_CLASS, {format_tokens(trace.prompt_tokens, trace.completion_tokens)} }
+                                    td { class: TD_CLASS, {format_duration(trace.duration_ms)} }
                                     td { class: TD_CLASS,
-                                        trace
+                                        {trace
                                             .degradation_reason
                                             .clone()
-                                            .unwrap_or_else(|| "-".into())
+                                            .unwrap_or_else(|| "-".into())}
                                     }
                                     td { class: TD_CLASS,
-                                        trace
+                                        {trace
                                             .summary
                                             .clone()
-                                            .unwrap_or_else(|| "-".into())
+                                            .unwrap_or_else(|| "-".into())}
                                     }
                                 }
                             }
@@ -90,7 +91,7 @@ pub fn ToolTracePanel(cx: Scope) -> Element {
                     h3 { class: "text-sm font-semibold text-slate-800", "LLM 计划 / 推理轨迹" }
                     for trace in llm_traces.iter() {
                         div { class: "rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600 space-y-1",
-                            p { class: "font-medium text-slate-700", format!("事件 #{}", trace.event_id) }
+                            p { class: "font-medium text-slate-700", {format!("事件 #{}", trace.event_id)} }
                             if let Some(model) = trace.model.as_ref() {
                                 p { "模型: {model}" }
                             }
@@ -98,16 +99,16 @@ pub fn ToolTracePanel(cx: Scope) -> Element {
                                 p { "策略: {plan}" }
                             }
                             if let Some(reasoning) = trace.reasoning.as_ref() {
-                                p { class: "text-slate-500", reasoning }
+                                p { class: "text-slate-500", "{reasoning}" }
                             }
                             if trace.prompt_tokens.is_some() || trace.completion_tokens.is_some() {
-                                p { format!(
+                                p { {format!(
                                     "Tokens(prompt/comp): {}",
                                     format_tokens(trace.prompt_tokens, trace.completion_tokens)
-                                ) }
+                                )} }
                             }
                             if let Some(conf) = trace.confidence {
-                                p { format!("置信度: {}", format_confidence(conf)) }
+                                p { {format!("置信度: {}", format_confidence(conf))} }
                             }
                         }
                     }
@@ -142,14 +143,14 @@ impl ToolTraceRow {
             call_id,
             ..Default::default()
         };
-        row.first_event_id = event.event_id.into_inner();
+        row.first_event_id = event.event_id.as_u64();
         row.timestamp_ms = Some(event.timestamp_ms);
         row.update_from_event(event);
         row
     }
 
     fn update_from_event(&mut self, event: &DialogueEvent) {
-        self.first_event_id = self.first_event_id.min(event.event_id.into_inner());
+        self.first_event_id = self.first_event_id.min(event.event_id.as_u64());
         self.timestamp_ms = Some(match self.timestamp_ms {
             Some(existing) => existing.min(event.timestamp_ms),
             None => event.timestamp_ms,
@@ -283,29 +284,38 @@ struct SummaryRowProps {
     stats: TraceStats,
 }
 
-fn SummaryRow(cx: Scope<SummaryRowProps>) -> Element {
-    let stats = cx.props.stats.clone();
+impl PartialEq for SummaryRowProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for SummaryRowProps {}
+
+#[component]
+fn SummaryRow(props: SummaryRowProps) -> Element {
+    let stats = props.stats.clone();
     let success_rate = stats.success_rate_pct();
     let avg_latency = stats
         .average_latency_ms()
         .map(|ms| format!("{:.0}ms", ms))
         .unwrap_or_else(|| "-".into());
 
-    cx.render(rsx! {
+    rsx! {
         div { class: "flex flex-wrap items-center gap-4 text-xs text-slate-600",
-            span { format!("调用: {}", stats.total_calls) }
-            span { format!("成功: {}", stats.success_calls) }
-            span { format!("失败: {}", stats.failure_calls) }
-            span { format!("待决: {}", stats.pending_calls()) }
-            span { format!("成功率: {:.1}%", success_rate) }
-            span { format!("平均耗时: {}", avg_latency) }
-            span { format!(
+            span { {format!("调用: {}", stats.total_calls)} }
+            span { {format!("成功: {}", stats.success_calls)} }
+            span { {format!("失败: {}", stats.failure_calls)} }
+            span { {format!("待决: {}", stats.pending_calls())} }
+            span { {format!("成功率: {:.1}%", success_rate)} }
+            span { {format!("平均耗时: {}", avg_latency)} }
+            span { {format!(
                 "Tokens(prompt/comp): {}/{}",
                 stats.prompt_tokens(),
                 stats.completion_tokens()
-            ) }
+            )} }
         }
-    })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -330,66 +340,75 @@ struct LaneCardProps {
     summary: LaneSummary,
 }
 
-fn LaneCard(cx: Scope<LaneCardProps>) -> Element {
-    let summary = &cx.props.summary;
+impl PartialEq for LaneCardProps {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for LaneCardProps {}
+
+#[component]
+fn LaneCard(props: LaneCardProps) -> Element {
+    let summary = &props.summary;
     let confidence = summary.confidence_avg.map(|value| format_confidence(value));
 
-    cx.render(rsx! {
+    rsx! {
         div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm space-y-2 text-xs text-slate-600",
             header { class: "flex items-start justify-between",
                 div {
-                    h3 { class: "text-sm font-semibold text-slate-800", format!("{} Lane", format_lane(&summary.lane)) }
-                    p { class: "text-[11px] text-slate-500", format!("{} 个周期", summary.cycle_count) }
+                    h3 { class: "text-sm font-semibold text-slate-800", {format!("{} Lane", format_lane(&summary.lane))} }
+                    p { class: "text-[11px] text-slate-500", {format!("{} 个周期", summary.cycle_count)} }
                 }
                 if let Some(conf) = confidence {
-                    span { class: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700", format!("置信度 {conf}") }
+                    span { class: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700", {format!("置信度 {conf}")} }
                 }
             }
 
-            p { format!(
+            p { {format!(
                 "Token 使用: {}",
                 format_budget_pair(summary.tokens_spent, summary.tokens_allowed)
-            ) }
+            )} }
 
             if summary.walltime_spent_ms > 0 || summary.walltime_allowed_ms > 0 {
-                p { format!(
+                p { {format!(
                     "Walltime: {}",
                     format_budget_pair_u64(summary.walltime_spent_ms, summary.walltime_allowed_ms)
-                ) }
+                )} }
             }
 
             if let Some(tokens) = summary.planned_tokens {
-                p { format!("计划 Token: {}", tokens) }
+                p { {format!("计划 Token: {}", tokens)} }
             }
 
             if let Some(walltime) = summary.planned_walltime_ms {
-                p { format!("计划 Walltime: {}", format_ms(walltime as u64)) }
+                p { {format!("计划 Walltime: {}", format_ms(walltime as u64))} }
             }
 
             if let Some(metrics) = summary.tool_metrics.as_ref() {
                 div { class: "rounded border border-slate-100 bg-slate-50 p-2 space-y-1",
-                    p { format!(
+                    p { {format!(
                         "调用 {}/{} 成功 (待决 {})",
                         metrics.success_calls,
                         metrics.total_calls,
                         metrics.pending_calls()
-                    ) }
-                    p { format!("成功率: {:.1}%", metrics.success_rate_pct()) }
+                    )} }
+                    p { {format!("成功率: {:.1}%", metrics.success_rate_pct())} }
                     if let Some(avg) = metrics.average_latency_ms() {
-                        p { format!("平均耗时: {:.0}ms", avg) }
+                        p { {format!("平均耗时: {:.0}ms", avg)} }
                     }
-                    p { format!(
+                    p { {format!(
                         "Tokens(prompt/comp): {}/{}",
                         metrics.prompt_tokens(),
                         metrics.completion_tokens()
-                    ) }
+                    )} }
                 }
             }
 
             if !summary.degradation_reasons.is_empty() {
                 div { class: "flex flex-wrap gap-1",
                     for reason in summary.degradation_reasons.iter() {
-                        span { class: "rounded bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800", reason }
+                        span { class: "rounded bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800", "{reason}" }
                     }
                 }
             }
@@ -397,12 +416,12 @@ fn LaneCard(cx: Scope<LaneCardProps>) -> Element {
             if !summary.plan_highlights.is_empty() {
                 ul { class: "list-disc space-y-1 pl-4 text-[11px] text-slate-500",
                     for highlight in summary.plan_highlights.iter() {
-                        li { highlight }
+                        li { "{highlight}" }
                     }
                 }
             }
         }
-    })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -430,7 +449,7 @@ fn collect_tool_traces(events: &[DialogueEvent]) -> Vec<ToolTraceRow> {
             .as_ref()
             .map(|inv| inv.call_id.clone())
             .or_else(|| event.tool_result.as_ref().map(|res| res.call_id.clone()))
-            .unwrap_or_else(|| format!("evt-{}", event.event_id.into_inner()));
+            .unwrap_or_else(|| format!("evt-{}", event.event_id.as_u64()));
         let tool_id = event
             .tool_invocation
             .as_ref()
@@ -463,7 +482,7 @@ fn collect_llm_traces(events: &[DialogueEvent]) -> Vec<LlmTraceRow> {
                 .map(|value| value.to_string());
 
             LlmTraceRow {
-                event_id: event.event_id.into_inner(),
+                event_id: event.event_id.as_u64(),
                 plan: event.reasoning_strategy.clone(),
                 reasoning: event.reasoning_trace.clone(),
                 prompt_tokens,

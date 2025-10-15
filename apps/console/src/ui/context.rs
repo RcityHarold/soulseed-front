@@ -6,11 +6,11 @@ use crate::models::{
 use crate::state::use_app_state;
 use dioxus::prelude::*;
 
-pub fn ContextPanel(cx: Scope) -> Element {
-    use_context_bundle(cx);
+#[component]
+pub fn ContextPanel() -> Element {
+    use_context_bundle();
 
-    let app_state = use_app_state(cx);
-    let context_state = app_state.read().context.clone();
+    let context_state = use_app_state().read().context.clone();
 
     let body = if context_state.is_loading {
         rsx! { p { class: "text-xs text-slate-500", "正在加载上下文包..." } }
@@ -19,10 +19,10 @@ pub fn ContextPanel(cx: Scope) -> Element {
     } else if let Some(ref bundle) = context_state.bundle {
         rsx! {
             div { class: "space-y-4",
-                render_anchor(bundle)
-                render_segments(bundle)
+                {render_anchor(bundle)}
+                {render_segments(bundle)}
                 if let Some(ref explain_indices) = context_state.explain_indices {
-                    render_explain_indices(explain_indices)
+                    {render_explain_indices(explain_indices)}
                 }
             }
         }
@@ -43,6 +43,16 @@ pub fn ContextPanel(cx: Scope) -> Element {
 
 fn render_anchor(bundle: &ContextBundleView) -> Element {
     let anchor = &bundle.anchor;
+    let tenant_label = anchor.tenant_id.clone();
+    let session_label = anchor
+        .session_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "无".into());
+    let envelope_label = anchor.envelope_id.to_string();
+    let config_info = format!(
+        "Schema v{} · Config {}@{}",
+        anchor.schema_v, anchor.config_snapshot_hash, anchor.config_snapshot_version
+    );
     let scenario_label = anchor
         .scenario
         .as_ref()
@@ -53,10 +63,10 @@ fn render_anchor(bundle: &ContextBundleView) -> Element {
         div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
             h3 { class: "text-sm font-semibold text-slate-800", "Anchor" }
             ul { class: "mt-2 space-y-1 text-xs text-slate-600",
-                li { "Tenant: {anchor.tenant_id}" }
-                li { "Session: {anchor.session_id.map(|id| id.to_string()).unwrap_or_else(|| \"无\".into())}" }
-                li { "Envelope: {anchor.envelope_id}" }
-                li { "Schema v{anchor.schema_v} · Config {anchor.config_snapshot_hash}@{anchor.config_snapshot_version}" }
+                li { "Tenant: {tenant_label}" }
+                li { "Session: {session_label}" }
+                li { "Envelope: {envelope_label}" }
+                li { "{config_info}" }
                 li { "Scenario: {scenario_label}" }
             }
         }
@@ -71,7 +81,7 @@ fn render_segments(bundle: &ContextBundleView) -> Element {
                 p { class: "text-xs text-slate-500", "暂无分段" }
             } else {
                 for segment in bundle.segments.iter() {
-                    render_segment(segment)
+                    {render_segment(segment)}
                 }
             }
             if let Some(budget) = bundle.budget.as_ref() {
@@ -112,10 +122,10 @@ fn render_explain_indices(indices: &ExplainIndices) -> Element {
         div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
             h3 { class: "text-sm font-semibold text-slate-800", "Explain 指纹" }
             div { class: "mt-2 grid gap-3 md:grid-cols-2",
-                render_explain_section("Graph", &indices.graph)
-                render_explain_section("Context", &indices.context)
-                render_dfr_section(&indices.dfr)
-                render_ace_section(&indices.ace)
+                {render_explain_section("Graph", &indices.graph)}
+                {render_explain_section("Context", &indices.context)}
+                {render_dfr_section(&indices.dfr)}
+                {render_ace_section(&indices.ace)}
             }
         }
     }
@@ -148,7 +158,7 @@ fn render_explain_section(title: &str, section: &ExplainSection) -> Element {
     }
 }
 
-fn render_dfr_section(section: &crate::models::DfrExplainSection) -> Element {
+fn render_dfr_section(section: &DfrExplainSection) -> Element {
     let router = section
         .router_digest
         .as_ref()
