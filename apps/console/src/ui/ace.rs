@@ -1,8 +1,11 @@
-
 use crate::hooks::ace::use_ace_cycles;
-use crate::models::{AceCycleStatus, AceCycleSummary, AceLane};
+use crate::models::{
+    AceCycleStatus, AceCycleSummary, AceLane, AwarenessEventType, CycleSnapshotView,
+    OutboxMessageView, RouterDecisionView,
+};
 use crate::state::{use_app_actions, use_app_state, AppActions};
 use dioxus::prelude::*;
+use serde_json::to_string_pretty;
 
 #[component]
 pub fn AcePanel() -> Element {
@@ -10,6 +13,17 @@ pub fn AcePanel() -> Element {
 
     let actions = use_app_actions();
     let ace_state = use_app_state().read().ace.clone();
+
+    let selected_cycle_id = ace_state.selected_cycle_id.clone();
+    let selected_snapshot = selected_cycle_id
+        .as_ref()
+        .and_then(|id| ace_state.snapshots.get(id).cloned());
+    let selected_outbox = selected_cycle_id
+        .as_ref()
+        .and_then(|id| ace_state.outboxes.get(id).cloned())
+        .unwrap_or_default();
+    let snapshot_loading = ace_state.snapshot_loading;
+    let snapshot_error = ace_state.snapshot_error.clone();
 
     let body = if ace_state.is_loading {
         rsx! { p { class: "text-xs text-slate-500", "正在加载 ACE 周期..." } }
@@ -30,8 +44,15 @@ pub fn AcePanel() -> Element {
                     cycles: ace_state.cycles.clone(),
                     selected_cycle_id: ace_state.selected_cycle_id.clone(),
                     actions: actions.clone(),
+                    snapshot_loading,
                 }
-                CycleDetail { cycle: selected_cycle }
+                CycleDetail {
+                    cycle: selected_cycle,
+                    snapshot: selected_snapshot,
+                    outbox: selected_outbox,
+                    snapshot_loading,
+                    snapshot_error,
+                }
             }
         }
     };
@@ -53,6 +74,7 @@ struct CycleListProps {
     cycles: Vec<AceCycleSummary>,
     selected_cycle_id: Option<String>,
     actions: AppActions,
+    snapshot_loading: bool,
 }
 
 impl PartialEq for CycleListProps {
@@ -73,6 +95,7 @@ fn CycleList(props: CycleListProps) -> Element {
                     cycle,
                     selected_cycle_id: props.selected_cycle_id.clone(),
                     actions: props.actions.clone(),
+                    snapshot_loading: props.snapshot_loading,
                 }
             }
         }
@@ -85,6 +108,7 @@ struct CycleListItemProps {
     cycle: AceCycleSummary,
     selected_cycle_id: Option<String>,
     actions: AppActions,
+    snapshot_loading: bool,
 }
 
 impl PartialEq for CycleListItemProps {
@@ -122,6 +146,9 @@ fn CycleListItem(props: CycleListItemProps) -> Element {
             div { class: "flex items-center justify-between",
                 span { class: "font-semibold", "{props.cycle.cycle_id}" }
                 span { class: "text-[11px]", "{format_status(&props.cycle.status)}" }
+                if is_active && props.snapshot_loading {
+                    span { class: "text-[11px] text-amber-400", "加载中…" }
+                }
             }
             p { class: "mt-1", "Lane: {format_lane(&props.cycle.lane)}" }
             if let Some(budget) = props.cycle.budget.as_ref() {
@@ -140,6 +167,10 @@ fn CycleListItem(props: CycleListItemProps) -> Element {
 #[props(no_eq)]
 struct CycleDetailProps {
     cycle: Option<AceCycleSummary>,
+    snapshot: Option<CycleSnapshotView>,
+    outbox: Vec<OutboxMessageView>,
+    snapshot_loading: bool,
+    snapshot_error: Option<String>,
 }
 
 impl PartialEq for CycleDetailProps {
@@ -160,6 +191,48 @@ fn CycleDetail(props: CycleDetailProps) -> Element {
         };
     };
 
+    if props.snapshot_loading {
+        return rsx! {
+            div { class: "md:w-2/3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
+                p { class: "text-xs text-slate-500", "正在加载周期 {cycle.cycle_id} 的详情..." }
+            }
+        };
+    }
+
+    if let Some(err) = props.snapshot_error.clone() {
+        return rsx! {
+            div { class: "md:w-2/3 rounded-lg border border-red-200 bg-red-50 p-4 shadow-sm",
+                p { class: "text-xs text-red-600", "无法获取周期详情: {err}" }
+            }
+        };
+    }
+
+    let snapshot = match props.snapshot.clone() {
+        Some(snapshot) => snapshot,
+        None => {
+            return rsx! {
+                div { class: "md:w-2/3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
+                    p { class: "text-xs text-slate-500", "尚未加载周期 {cycle.cycle_id} 的快照" }
+                }
+            };
+        }
+    };
+
+    let outbox = props.outbox.clone();
+    let router_decision = snapshot.schedule.router_decision.clone();
+    let manifest_digest = snapshot
+        .sync_point
+        .context_manifest
+        .get("manifest_digest")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let sync_event_count = snapshot.sync_point.events.len();
+    let pending_injections = snapshot.sync_point.pending_injections.len();
+
+    let created_at = snapshot.schedule.created_at.clone();
+    let sync_point_kind = format!("{:?}", snapshot.sync_point.kind);
+    let outcomes = snapshot.outcomes.clone();
+
     rsx! {
         div { class: "md:w-2/3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm space-y-3",
             h3 { class: "text-sm font-semibold text-slate-800", "周期详情" }
@@ -167,6 +240,7 @@ fn CycleDetail(props: CycleDetailProps) -> Element {
                 li { "周期 ID: {cycle.cycle_id}" }
                 li { "Lane: {format_lane(&cycle.lane)}" }
                 li { "状态: {format_status(&cycle.status)}" }
+                li { "创建时间: {created_at}" }
             }
             if let Some(budget) = cycle.budget.as_ref() {
                 div { class: "flex flex-wrap gap-2 text-[11px]",
@@ -176,9 +250,52 @@ fn CycleDetail(props: CycleDetailProps) -> Element {
                     }
                 }
             }
+            if let Some(decision) = router_decision.as_ref() {
+                { render_router_decision(decision) }
+            }
+            div { class: "rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 space-y-1",
+                h4 { class: "text-xs font-semibold text-slate-800", "同步点" }
+                p { "类型: {sync_point_kind}" }
+                if let Some(ref digest) = manifest_digest {
+                    p { "Manifest Digest: {digest}" }
+                }
+                p { "事件数量: {sync_event_count}" }
+                p { "待处理注入: {pending_injections}" }
+                if !snapshot.sync_point.pending_injections.is_empty() {
+                    ul { class: "list-disc pl-4 text-[11px] text-slate-600",
+                        for item in snapshot.sync_point.pending_injections.iter() {
+                            li { "优先级 {item.priority} - {item.author_role}" }
+                        }
+                    }
+                }
+            }
+            if !outcomes.is_empty() {
+                div { class: "rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 space-y-1",
+                    h4 { class: "text-xs font-semibold text-slate-800", "Outcome 记录" }
+                    for outcome in outcomes.iter() {
+                        p { "# {outcome.cycle_id} => {outcome.status} ({outcome.manifest_digest.clone().unwrap_or_default()})" }
+                    }
+                }
+            }
             if let Some(metadata) = cycle.metadata.as_ref() {
                 div { class: "rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600 break-words",
                     "metadata: {metadata}"
+                }
+            }
+            div { class: "rounded border border-slate-100 bg-white p-3 text-xs text-slate-700 space-y-1",
+                h4 { class: "text-xs font-semibold text-slate-800", "Outbox" }
+                if outbox.is_empty() {
+                    p { class: "text-xs text-slate-500", "暂无 Outbox 信息" }
+                } else {
+                    ul { class: "space-y-1",
+                        for item in outbox.iter() {
+                            li { class: "rounded border border-slate-200 bg-slate-50 p-2",
+                                span { class: "block font-semibold", "{awareness_event_label(&item.payload.event_type)}" }
+                                span { class: "block text-[11px] text-slate-500", "Event ID: {item.event_id}" }
+                                span { class: "block text-[11px] text-slate-500", "Cycle ID: {item.cycle_id}" }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -191,6 +308,44 @@ fn format_lane(lane: &AceLane) -> &'static str {
         AceLane::Tool => "Tool",
         AceLane::SelfReason => "Self Reason",
         AceLane::Collab => "Collab",
+    }
+}
+
+fn to_pretty_json(value: &serde_json::Value) -> String {
+    to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn awareness_event_label(event_type: &AwarenessEventType) -> String {
+    format!("{:?}", event_type)
+}
+
+fn render_router_decision(decision: &RouterDecisionView) -> Element {
+    let fork_label = format!("{:?}", decision.decision_path.fork);
+    let confidence = format!("{:.2}", decision.decision_path.confidence);
+    let plan_json = to_pretty_json(&decision.plan);
+    let rejected = decision.rejected.clone();
+
+    rsx! {
+        div { class: "rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700 space-y-2",
+            h4 { class: "text-xs font-semibold text-slate-800", "决策信息" }
+            p { class: "text-xs", "Context Digest: {decision.context_digest}" }
+            p { class: "text-xs", "Issued At: {decision.issued_at}" }
+            div { class: "space-y-1",
+                p { class: "text-xs", "Fork: {fork_label}" }
+                p { class: "text-xs", "Confidence: {confidence}" }
+            }
+            if !rejected.is_empty() {
+                ul { class: "text-xs text-slate-600 space-y-1",
+                    li { class: "font-semibold", "Rejected:" }
+                    for (code, reason) in rejected.iter() {
+                        li { class: "pl-2", "- {code}: {reason}" }
+                    }
+                }
+            }
+            if !decision.plan.is_null() {
+                pre { class: "overflow-x-auto rounded bg-slate-900 p-3 text-[11px] text-slate-100", "{plan_json}" }
+            }
+        }
     }
 }
 

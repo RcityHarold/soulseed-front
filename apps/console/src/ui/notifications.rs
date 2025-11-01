@@ -1,4 +1,3 @@
-
 use crate::state::{use_app_actions, use_app_state};
 use dioxus::prelude::*;
 
@@ -91,8 +90,30 @@ pub fn NotificationCenter() -> Element {
         if let Some(status) = snapshot.operation.last_status {
             details.push(("HTTP 状态".to_string(), status.to_string()));
         }
-        if let Some(trace) = snapshot.operation.last_trace_id.clone() {
+        if let Some(code) = snapshot.operation.error_code.clone() {
+            details.push(("错误代码".to_string(), code));
+        }
+        if let Some(trace) = snapshot.operation.trace_id.clone() {
             details.push(("trace_id".to_string(), trace));
+        }
+        if let Some(triggered) = snapshot.operation.triggered_at.clone() {
+            details.push(("触发时间".to_string(), triggered));
+        }
+        if let Some(cycle_id) = snapshot.operation.last_cycle_id.clone() {
+            details.push(("周期 ID".to_string(), cycle_id));
+        }
+        if let Some(outcome) = snapshot.operation.last_outcome.as_ref() {
+            details.push((
+                "Outcome".to_string(),
+                format!(
+                    "#{} {}",
+                    outcome.cycle_id,
+                    outcome
+                        .manifest_digest
+                        .clone()
+                        .unwrap_or_else(|| outcome.status.clone())
+                ),
+            ));
         }
         let context_label = snapshot
             .operation
@@ -111,13 +132,42 @@ pub fn NotificationCenter() -> Element {
             }
         });
     } else if let Some(message) = snapshot.operation.last_message.clone() {
+        let mut details = Vec::new();
+        if let Some(trace) = snapshot.operation.trace_id.clone() {
+            details.push(("trace_id".to_string(), trace));
+        }
+        if let Some(triggered) = snapshot.operation.triggered_at.clone() {
+            details.push(("触发时间".to_string(), triggered));
+        }
+        if let Some(cycle_id) = snapshot.operation.last_cycle_id.clone() {
+            details.push(("周期 ID".to_string(), cycle_id));
+        }
+        if let Some(outcome) = snapshot.operation.last_outcome.as_ref() {
+            details.push((
+                "Outcome".to_string(),
+                format!(
+                    "#{} {}",
+                    outcome.cycle_id,
+                    outcome
+                        .manifest_digest
+                        .clone()
+                        .unwrap_or_else(|| outcome.status.clone())
+                ),
+            ));
+        }
+        let title = snapshot
+            .operation
+            .context
+            .clone()
+            .unwrap_or_else(|| "操作成功".to_string());
         let app_actions = actions.clone();
         toasts.push(rsx! {
             Toast {
                 key: "operation-success",
                 kind: ToastKind::Success,
-                title: "操作成功".to_string(),
+                title,
                 message,
+                details,
                 on_close: move |_| app_actions.clone().clear_operation_status(),
             }
         });

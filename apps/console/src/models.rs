@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use soulseed_agi_core_models::legacy::dialogue_event::DialogueEvent;
 pub use soulseed_agi_core_models::{
     AccessClass, AwarenessAnchor, AwarenessDegradationReason, AwarenessEvent, AwarenessEventType,
-    ConversationScenario, DecisionPath, DecisionPlan, DialogueEvent, DialogueEventType,
-    SyncPointKind, SyncPointReport,
+    ConversationScenario, DecisionPath, DecisionPlan, DialogueEventType, SyncPointKind,
+    SyncPointReport,
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -39,6 +40,17 @@ impl Default for AceLane {
     }
 }
 
+impl AceLane {
+    pub fn from_label(label: &str) -> Self {
+        match label.to_ascii_lowercase().as_str() {
+            "tool" | "tool_lane" => AceLane::Tool,
+            "self_reason" | "self" | "selfreason" => AceLane::SelfReason,
+            "collab" | "collaboration" => AceLane::Collab,
+            _ => AceLane::Clarify,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AceCycleStatus {
@@ -47,6 +59,19 @@ pub enum AceCycleStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+impl AceCycleStatus {
+    pub fn from_label(label: &str) -> Self {
+        match label.to_ascii_lowercase().as_str() {
+            "pending" => AceCycleStatus::Pending,
+            "running" => AceCycleStatus::Running,
+            "completed" | "complete" | "success" => AceCycleStatus::Completed,
+            "failed" | "failure" | "error" => AceCycleStatus::Failed,
+            "cancelled" | "canceled" => AceCycleStatus::Cancelled,
+            _ => AceCycleStatus::Running,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -78,6 +103,124 @@ pub struct AceCycleSummary {
     pub decision_path: Option<DecisionPath>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CycleOutcomeSummary {
+    pub cycle_id: u64,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CycleTriggerResponse {
+    pub cycle_id: u64,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CycleScheduleView {
+    pub cycle_id: u64,
+    pub lane: String,
+    pub anchor: AwarenessAnchor,
+    pub budget: BudgetSnapshotView,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_events: Vec<AwarenessEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explain_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_decision: Option<RouterDecisionView>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_cycle_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collab_scope_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BudgetSnapshotView {
+    pub tokens_allowed: u32,
+    pub tokens_spent: u32,
+    pub walltime_ms_allowed: u64,
+    pub walltime_ms_used: u64,
+    #[serde(default)]
+    pub external_cost_allowed: f32,
+    #[serde(default)]
+    pub external_cost_spent: f32,
+}
+
+impl From<&BudgetSnapshotView> for AceBudget {
+    fn from(snapshot: &BudgetSnapshotView) -> Self {
+        AceBudget {
+            tokens_allowed: Some(snapshot.tokens_allowed),
+            tokens_spent: Some(snapshot.tokens_spent),
+            walltime_ms_allowed: Some(snapshot.walltime_ms_allowed),
+            walltime_ms_used: Some(snapshot.walltime_ms_used),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncPointInputView {
+    pub cycle_id: u64,
+    pub kind: SyncPointKind,
+    pub anchor: AwarenessAnchor,
+    pub events: Vec<DialogueEvent>,
+    pub budget: BudgetSnapshotView,
+    pub timeframe: (String, String),
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_injections: Vec<HitlInjectionView>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub context_manifest: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_cycle_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collab_scope_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HitlInjectionView {
+    pub injection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<u64>,
+    pub author_role: String,
+    pub priority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_at: Option<String>,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutboxMessageView {
+    pub cycle_id: u64,
+    pub event_id: u64,
+    pub payload: AwarenessEvent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CycleSnapshotView {
+    pub schedule: CycleScheduleView,
+    pub sync_point: SyncPointInputView,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<CycleOutcomeSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbox: Vec<OutboxMessageView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RouterDecisionView {
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub plan: Value,
+    pub decision_path: DecisionPath,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected: Vec<(String, String)>,
+    pub context_digest: String,
+    pub issued_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

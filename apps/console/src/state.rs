@@ -8,8 +8,9 @@ use std::collections::{BTreeSet, HashMap};
 use wasm_bindgen_futures::spawn_local;
 
 use crate::models::{
-    AceCycleSummary, AwarenessEvent, CausalGraphView, ContextBundleView, ConversationScenario,
-    DialogueEvent, ExplainIndices, RecallResultView, TenantWorkspace, WorkspaceSession,
+    AceCycleSummary, AceCycleStatus, AceLane, AwarenessEvent, CausalGraphView, ContextBundleView,
+    ConversationScenario, CycleOutcomeSummary, CycleSnapshotView, DialogueEvent, ExplainIndices,
+    HitlInjection, OutboxMessageView, RecallResultView, TenantWorkspace, WorkspaceSession,
 };
 
 pub type AppSignal = Signal<AppState>;
@@ -18,6 +19,10 @@ pub type AppSignal = Signal<AppState>;
 pub struct TimelineQuery {
     #[serde(default = "TimelineQuery::default_limit")]
     pub limit: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario: Option<ConversationScenario>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,6 +192,14 @@ pub struct AceState {
     pub selected_cycle_id: Option<String>,
     pub is_loading: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub snapshots: HashMap<String, CycleSnapshotView>,
+    #[serde(default)]
+    pub outboxes: HashMap<String, Vec<OutboxMessageView>>,
+    #[serde(default)]
+    pub snapshot_loading: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -227,9 +240,17 @@ pub struct OperationState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_trace_id: Option<String>,
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggered_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cycle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<CycleOutcomeSummary>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -257,6 +278,9 @@ impl AppActions {
         state.tenant_id = tenant;
         state.timeline.clear();
         state.timeline.filters.clear();
+        state.timeline.query.session_id = None;
+        state.timeline.query.scenario = None;
+        state.timeline.query.cursor = None;
         state.context = ContextState::default();
         state.ace = AceState::default();
         state.live_stream = LiveStreamState::default();
@@ -269,6 +293,8 @@ impl AppActions {
         state.session_id = session;
         state.timeline.clear();
         state.timeline.filters.clear();
+        state.timeline.query.session_id = state.session_id.clone();
+        state.timeline.query.cursor = None;
         state.context = ContextState::default();
         state.ace = AceState::default();
         state.live_stream = LiveStreamState::default();
@@ -281,6 +307,8 @@ impl AppActions {
             let mut state = self.state.write_unchecked();
             state.scenario_filter = scenario;
             state.timeline.clear();
+            state.timeline.query.scenario = state.scenario_filter.clone();
+            state.timeline.query.cursor = None;
         }
     }
 
@@ -402,6 +430,12 @@ impl AppActions {
             .events
             .sort_by_key(|event| event.timestamp_ms);
 
+        if state.graph.query.root_event_id.is_none() {
+            if let Some(first) = state.timeline.events.first() {
+                state.graph.query.root_event_id = Some(first.event_id.as_u64());
+            }
+        }
+
         for item in awareness.drain(..) {
             if !state
                 .timeline
@@ -458,10 +492,72 @@ impl AppActions {
         state.ace.cycles = cycles;
         state.ace.is_loading = false;
         state.ace.error = None;
+        state.ace.snapshot_loading = false;
     }
 
     pub fn select_ace_cycle(&self, cycle_id: Option<String>) {
-        self.state.write_unchecked().ace.selected_cycle_id = cycle_id;
+        let mut state = self.state.write_unchecked();
+        state.ace.selected_cycle_id = cycle_id;
+        state.ace.snapshot_error = None;
+    }
+
+    pub fn set_ace_snapshot_loading(&self, loading: bool) {
+        self.state.write_unchecked().ace.snapshot_loading = loading;
+    }
+
+    pub fn set_ace_snapshot_error(&self, message: Option<String>) {
+        let mut state = self.state.write_unchecked();
+        state.ace.snapshot_error = message.clone();
+        state.ace.snapshot_loading = false;
+    }
+
+    pub fn store_ace_snapshot(
+        &self,
+        cycle_id: String,
+        snapshot: CycleSnapshotView,
+        outbox: Vec<OutboxMessageView>,
+    ) {
+        let mut state = self.state.write_unchecked();
+        state
+            .ace
+            .snapshots
+            .insert(cycle_id.clone(), snapshot.clone());
+        state.ace.outboxes.insert(cycle_id.clone(), outbox);
+        state.ace.snapshot_loading = false;
+        state.ace.snapshot_error = None;
+
+        if let Some(summary) = state
+            .ace
+            .cycles
+            .iter_mut()
+            .find(|cycle| cycle.cycle_id == cycle_id)
+        {
+            summary.status = AceCycleStatus::from_label(&snapshot.schedule.status);
+            summary.lane = AceLane::from_label(&snapshot.schedule.lane);
+            summary.anchor = Some(snapshot.schedule.anchor.clone());
+            summary.budget = Some((&snapshot.schedule.budget).into());
+            summary.decision_path = snapshot
+                .schedule
+                .router_decision
+                .as_ref()
+                .map(|decision| decision.decision_path.clone());
+            summary.pending_injections = snapshot
+                .sync_point
+                .pending_injections
+                .iter()
+                .map(|injection| HitlInjection {
+                    injection_id: injection.injection_id.clone(),
+                    cycle_id: summary.cycle_id.clone(),
+                    priority: injection.priority.clone(),
+                    author_role: injection.author_role.clone(),
+                    payload: injection.payload.clone(),
+                    status: injection.submitted_at.clone(),
+                })
+                .collect();
+            if !snapshot.sync_point.context_manifest.is_null() {
+                summary.metadata = Some(snapshot.sync_point.context_manifest.clone());
+            }
+        }
     }
 
     pub fn set_operation_success(&self, message: String) {
@@ -469,7 +565,7 @@ impl AppActions {
         state.operation.last_message = Some(message);
         state.operation.error = None;
         state.operation.last_status = None;
-        state.operation.last_trace_id = None;
+        state.operation.error_code = None;
         state.operation.context = None;
     }
 
@@ -478,7 +574,8 @@ impl AppActions {
         state.operation.error = Some(message);
         state.operation.last_message = None;
         state.operation.last_status = None;
-        state.operation.last_trace_id = None;
+        state.operation.error_code = None;
+        state.operation.trace_id = None;
         state.operation.context = None;
     }
 
@@ -486,6 +583,7 @@ impl AppActions {
         &self,
         status: u16,
         trace_id: Option<String>,
+        error_code: Option<String>,
         context: impl Into<String>,
         detail: Option<String>,
     ) {
@@ -496,8 +594,29 @@ impl AppActions {
         state.operation.error = Some(message);
         state.operation.last_message = None;
         state.operation.last_status = Some(status);
-        state.operation.last_trace_id = trace_id;
+        state.operation.error_code = error_code;
+        state.operation.trace_id = trace_id;
         state.operation.context = Some(context_label);
+    }
+
+    pub fn set_operation_trace(&self, trace_id: Option<String>) {
+        self.state.write_unchecked().operation.trace_id = trace_id;
+    }
+
+    pub fn set_operation_context(&self, context: Option<String>) {
+        self.state.write_unchecked().operation.context = context;
+    }
+
+    pub fn set_operation_triggered(&self, triggered_at: Option<String>) {
+        self.state.write_unchecked().operation.triggered_at = triggered_at;
+    }
+
+    pub fn set_operation_cycle(&self, cycle_id: Option<String>) {
+        self.state.write_unchecked().operation.last_cycle_id = cycle_id;
+    }
+
+    pub fn set_operation_outcome(&self, outcome: Option<CycleOutcomeSummary>) {
+        self.state.write_unchecked().operation.last_outcome = outcome;
     }
 
     pub fn clear_operation_status(&self) {
@@ -633,9 +752,9 @@ impl AppActions {
     }
 
     pub fn update_next_cursor(&self, cursor: Option<String>) {
-        if let Some(cursor) = cursor {
-            self.state.write_unchecked().timeline.next_cursor = Some(cursor);
-        }
+        let mut state = self.state.write_unchecked();
+        state.timeline.next_cursor = cursor.clone();
+        state.timeline.query.cursor = cursor;
     }
 }
 
