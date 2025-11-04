@@ -5,12 +5,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 #[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
 use crate::models::{
-    AceCycleSummary, AceCycleStatus, AceLane, AwarenessEvent, CausalGraphView, ContextBundleView,
+    AceCycleStatus, AceCycleSummary, AceLane, AwarenessEvent, CausalGraphView, ContextBundleView,
     ConversationScenario, CycleOutcomeSummary, CycleSnapshotView, DialogueEvent, ExplainIndices,
-    HitlInjection, OutboxMessageView, RecallResultView, TenantWorkspace, WorkspaceSession,
+    HitlInjection, ManifestDigestRecord, OutboxMessageView, RecallResultView, TenantWorkspace,
+    WorkspaceSession,
 };
 
 pub type AppSignal = Signal<AppState>;
@@ -81,6 +84,10 @@ pub struct TimelineFilters {
     pub degradation_reasons: BTreeSet<String>,
     #[serde(default)]
     pub awareness_types: BTreeSet<String>,
+    #[serde(default)]
+    pub router_digests: BTreeSet<String>,
+    #[serde(default)]
+    pub query_hashes: BTreeSet<String>,
 }
 
 impl TimelineFilters {
@@ -89,6 +96,8 @@ impl TimelineFilters {
         self.access_classes.clear();
         self.degradation_reasons.clear();
         self.awareness_types.clear();
+        self.router_digests.clear();
+        self.query_hashes.clear();
     }
 
     pub fn toggle_participant_role(&mut self, role: &str) {
@@ -105,6 +114,14 @@ impl TimelineFilters {
 
     pub fn toggle_awareness_type(&mut self, event_type: &str) {
         toggle_value(&mut self.awareness_types, event_type);
+    }
+
+    pub fn toggle_router_digest(&mut self, digest: &str) {
+        toggle_value(&mut self.router_digests, digest);
+    }
+
+    pub fn toggle_query_hash(&mut self, hash: &str) {
+        toggle_value(&mut self.query_hashes, hash);
     }
 
     pub fn matches_event(&self, event: &DialogueEvent) -> bool {
@@ -143,6 +160,36 @@ impl TimelineFilters {
             }
         }
 
+        if !self.router_digests.is_empty() || !self.query_hashes.is_empty() {
+            let info = extract_router_fields_from_event(event);
+            if !self.router_digests.is_empty() {
+                let matches = info
+                    .digest
+                    .as_ref()
+                    .map(|value| {
+                        let normalized = normalize_filter_value(value);
+                        self.router_digests.contains(normalized.as_str())
+                    })
+                    .unwrap_or(false);
+                if !matches {
+                    return false;
+                }
+            }
+            if !self.query_hashes.is_empty() {
+                let matches = info
+                    .query_hash
+                    .as_ref()
+                    .map(|value| {
+                        let normalized = normalize_filter_value(value);
+                        self.query_hashes.contains(normalized.as_str())
+                    })
+                    .unwrap_or(false);
+                if !matches {
+                    return false;
+                }
+            }
+        }
+
         true
     }
 
@@ -167,6 +214,36 @@ impl TimelineFilters {
             }
         }
 
+        if !self.router_digests.is_empty() || !self.query_hashes.is_empty() {
+            let info = extract_router_fields_from_value(&awareness.payload);
+            if !self.router_digests.is_empty() {
+                let matches = info
+                    .digest
+                    .as_ref()
+                    .map(|value| {
+                        let normalized = normalize_filter_value(value);
+                        self.router_digests.contains(normalized.as_str())
+                    })
+                    .unwrap_or(false);
+                if !matches {
+                    return false;
+                }
+            }
+            if !self.query_hashes.is_empty() {
+                let matches = info
+                    .query_hash
+                    .as_ref()
+                    .map(|value| {
+                        let normalized = normalize_filter_value(value);
+                        self.query_hashes.contains(normalized.as_str())
+                    })
+                    .unwrap_or(false);
+                if !matches {
+                    return false;
+                }
+            }
+        }
+
         true
     }
 
@@ -175,6 +252,8 @@ impl TimelineFilters {
             && self.access_classes.is_empty()
             && self.degradation_reasons.is_empty()
             && self.awareness_types.is_empty()
+            && self.router_digests.is_empty()
+            && self.query_hashes.is_empty()
     }
 }
 
@@ -184,6 +263,67 @@ pub struct ContextState {
     pub explain_indices: Option<ExplainIndices>,
     pub is_loading: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub manifest_history: Vec<ManifestDigestRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_manifest_digest: Option<String>,
+}
+impl ContextState {
+    pub fn upsert_manifest_entry(&mut self, mut record: ManifestDigestRecord) {
+        if record.manifest_digest.is_empty() {
+            return;
+        }
+
+        let digest_value = record.manifest_digest.clone();
+
+        if let Some(existing) = self
+            .manifest_history
+            .iter()
+            .find(|entry| entry.manifest_digest == digest_value)
+            .cloned()
+        {
+            let mut merged_ids = Vec::new();
+            for id in record.cycle_ids.iter() {
+                if !id.is_empty() && !merged_ids.contains(id) {
+                    merged_ids.push(id.clone());
+                }
+            }
+            for id in existing.cycle_ids {
+                if !id.is_empty() && !merged_ids.contains(&id) {
+                    merged_ids.push(id);
+                }
+            }
+            if merged_ids.is_empty() && !record.cycle_ids.is_empty() {
+                merged_ids = record.cycle_ids.clone();
+            }
+            record.cycle_ids = merged_ids;
+
+            if record.bundle.is_none() {
+                record.bundle = existing.bundle.clone();
+            }
+            if record.raw_manifest.is_none() {
+                record.raw_manifest = existing.raw_manifest.clone();
+            }
+            if record.seen_at.is_none() {
+                record.seen_at = existing.seen_at;
+            }
+        }
+
+        if record.cycle_ids.len() > 8 {
+            record.cycle_ids.truncate(8);
+        }
+
+        self.manifest_history
+            .retain(|existing| existing.manifest_digest != digest_value);
+        self.manifest_history.insert(0, record.clone());
+        if self.manifest_history.len() > 20 {
+            self.manifest_history.truncate(20);
+        }
+        if let Some(bundle) = record.bundle.as_ref() {
+            self.bundle = Some(bundle.clone());
+        }
+        self.active_manifest_digest = Some(digest_value);
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -224,6 +364,90 @@ pub struct GraphQuery {
     pub depth: u8,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationStageKind {
+    TriggerSubmit,
+    StreamAwait,
+    SnapshotRefresh,
+    OutboxReady,
+    HitlSubmit,
+    ContextSync,
+    Unknown,
+}
+
+impl Default for OperationStageKind {
+    fn default() -> Self {
+        OperationStageKind::Unknown
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OperationStageStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl Default for OperationStageStatus {
+    fn default() -> Self {
+        OperationStageStatus::Pending
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OperationStage {
+    pub kind: OperationStageKind,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    pub status: OperationStageStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub started_at_epoch_ms: Option<u128>,
+    #[serde(skip_serializing, skip_deserializing)]
+    pub finished_at_epoch_ms: Option<u128>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AuditActionKind {
+    Copy,
+    Export,
+}
+
+impl Default for AuditActionKind {
+    fn default() -> Self {
+        AuditActionKind::Copy
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: u64,
+    pub action: AuditActionKind,
+    pub label: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AuditLogState {
+    #[serde(default)]
+    pub next_id: u64,
+    #[serde(default)]
+    pub entries: Vec<AuditLogEntry>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GraphState {
     pub query: GraphQuery,
@@ -251,6 +475,16 @@ pub struct OperationState {
     pub last_cycle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<CycleOutcomeSummary>,
+    #[serde(default)]
+    pub stages: Vec<OperationStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_stage: Option<OperationStageKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_elapsed_ms: Option<u64>,
+    #[serde(default)]
+    pub last_indices_used: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_budget: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -265,6 +499,7 @@ pub struct AppState {
     pub workspace: WorkspaceState,
     pub graph: GraphState,
     pub operation: OperationState,
+    pub audit: AuditLogState,
 }
 
 #[derive(Clone)]
@@ -338,6 +573,16 @@ impl AppActions {
     pub fn toggle_awareness_type(&self, event_type: &str) {
         let mut state = self.state.write_unchecked();
         state.timeline.filters.toggle_awareness_type(event_type);
+    }
+
+    pub fn toggle_router_digest(&self, digest: &str) {
+        let mut state = self.state.write_unchecked();
+        state.timeline.filters.toggle_router_digest(digest);
+    }
+
+    pub fn toggle_query_hash(&self, hash: &str) {
+        let mut state = self.state.write_unchecked();
+        state.timeline.filters.toggle_query_hash(hash);
     }
 
     pub fn clear_timeline_filters(&self) {
@@ -473,10 +718,35 @@ impl AppActions {
         explain_indices: Option<ExplainIndices>,
     ) {
         let mut state = self.state.write_unchecked();
-        state.context.bundle = bundle;
         state.context.explain_indices = explain_indices;
         state.context.is_loading = false;
         state.context.error = None;
+
+        if let Some(bundle_value) = bundle.clone() {
+            match serde_json::to_value(&bundle_value) {
+                Ok(raw) => {
+                    if let Some(mut record) = manifest_record_from_value(&raw, None) {
+                        if record.bundle.is_none() {
+                            record.bundle = Some(bundle_value.clone());
+                        }
+                        if record.raw_manifest.is_none() {
+                            record.raw_manifest = Some(raw);
+                        }
+                        state.context.upsert_manifest_entry(record);
+                    } else {
+                        state.context.bundle = Some(bundle_value);
+                        state.context.active_manifest_digest = None;
+                    }
+                }
+                Err(_) => {
+                    state.context.bundle = Some(bundle_value);
+                    state.context.active_manifest_digest = None;
+                }
+            }
+        } else {
+            state.context.bundle = None;
+            state.context.active_manifest_digest = None;
+        }
     }
 
     pub fn set_ace_loading(&self, loading: bool) {
@@ -558,6 +828,13 @@ impl AppActions {
                 summary.metadata = Some(snapshot.sync_point.context_manifest.clone());
             }
         }
+
+        if let Some(record) = manifest_record_from_value(
+            &snapshot.sync_point.context_manifest,
+            Some(cycle_id.clone()),
+        ) {
+            state.context.upsert_manifest_entry(record);
+        }
     }
 
     pub fn set_operation_success(&self, message: String) {
@@ -567,6 +844,8 @@ impl AppActions {
         state.operation.last_status = None;
         state.operation.error_code = None;
         state.operation.context = None;
+        state.operation.last_indices_used.clear();
+        state.operation.last_budget = None;
     }
 
     pub fn set_operation_error(&self, message: String) {
@@ -615,8 +894,169 @@ impl AppActions {
         self.state.write_unchecked().operation.last_cycle_id = cycle_id;
     }
 
+    pub fn record_audit_event(
+        &self,
+        action: AuditActionKind,
+        label: impl Into<String>,
+        target: impl Into<String>,
+    ) {
+        let mut state = self.state.write_unchecked();
+        let entry = AuditLogEntry {
+            id: state.audit.next_id,
+            action,
+            label: label.into(),
+            target: target.into(),
+            tenant_id: state.tenant_id.clone(),
+            session_id: state.session_id.clone(),
+            timestamp: now_iso_timestamp(),
+        };
+        state.audit.next_id = state.audit.next_id.saturating_add(1);
+        state.audit.entries.insert(0, entry);
+        if state.audit.entries.len() > 200 {
+            state.audit.entries.truncate(200);
+        }
+    }
+
+    pub fn clear_audit_logs(&self) {
+        let mut state = self.state.write_unchecked();
+        state.audit.entries.clear();
+        state.audit.next_id = 0;
+    }
+
     pub fn set_operation_outcome(&self, outcome: Option<CycleOutcomeSummary>) {
         self.state.write_unchecked().operation.last_outcome = outcome;
+    }
+
+    pub fn operation_stage_reset(&self) {
+        let mut state = self.state.write_unchecked();
+        state.operation.stages.clear();
+        state.operation.current_stage = None;
+        state.operation.total_elapsed_ms = None;
+    }
+
+    pub fn operation_stage_start(&self, kind: OperationStageKind, label: impl Into<String>) {
+        let mut state = self.state.write_unchecked();
+        let label = label.into();
+        let now_label = now_iso_timestamp();
+        let now_epoch = now_epoch_ms();
+
+        if let Some(stage) = state
+            .operation
+            .stages
+            .iter_mut()
+            .find(|stage| stage.kind == kind)
+        {
+            stage.status = OperationStageStatus::Running;
+            stage.label = label;
+            if stage.started_at.is_none() {
+                stage.started_at = Some(now_label);
+            }
+            stage.started_at_epoch_ms = Some(now_epoch);
+            stage.finished_at = None;
+            stage.finished_at_epoch_ms = None;
+            stage.duration_ms = None;
+            stage.detail = None;
+        } else {
+            let mut stage = OperationStage::default();
+            stage.kind = kind.clone();
+            stage.label = label;
+            stage.status = OperationStageStatus::Running;
+            stage.started_at = Some(now_label);
+            stage.started_at_epoch_ms = Some(now_epoch);
+            state.operation.stages.push(stage);
+        }
+
+        state.operation.current_stage = Some(kind);
+    }
+
+    pub fn operation_stage_complete(&self, kind: OperationStageKind, detail: Option<String>) {
+        let mut state = self.state.write_unchecked();
+        let now_label = now_iso_timestamp();
+        let now_epoch = now_epoch_ms();
+
+        if let Some(stage) = state
+            .operation
+            .stages
+            .iter_mut()
+            .find(|stage| stage.kind == kind)
+        {
+            stage.status = OperationStageStatus::Completed;
+            stage.finished_at = Some(now_label);
+            stage.finished_at_epoch_ms = Some(now_epoch);
+            stage.detail = detail;
+            if let Some(start_epoch) = stage.started_at_epoch_ms {
+                let duration = now_epoch.saturating_sub(start_epoch);
+                stage.duration_ms = Some((duration.min(u64::MAX as u128)) as u64);
+            }
+        } else {
+            let mut stage = OperationStage::default();
+            stage.kind = kind.clone();
+            stage.status = OperationStageStatus::Completed;
+            stage.finished_at = Some(now_label);
+            stage.finished_at_epoch_ms = Some(now_epoch);
+            stage.detail = detail;
+            state.operation.stages.push(stage);
+        }
+
+        if state.operation.current_stage.as_ref() == Some(&kind) {
+            state.operation.current_stage = None;
+        }
+
+        let total: u64 = state
+            .operation
+            .stages
+            .iter()
+            .filter_map(|stage| stage.duration_ms)
+            .sum();
+        state.operation.total_elapsed_ms = if total > 0 { Some(total) } else { None };
+    }
+
+    pub fn operation_stage_fail(&self, kind: OperationStageKind, detail: Option<String>) {
+        let mut state = self.state.write_unchecked();
+        let now_label = now_iso_timestamp();
+        let now_epoch = now_epoch_ms();
+
+        if let Some(stage) = state
+            .operation
+            .stages
+            .iter_mut()
+            .find(|stage| stage.kind == kind)
+        {
+            stage.status = OperationStageStatus::Failed;
+            stage.finished_at = Some(now_label);
+            stage.finished_at_epoch_ms = Some(now_epoch);
+            stage.detail = detail;
+            if let Some(start_epoch) = stage.started_at_epoch_ms {
+                let duration = now_epoch.saturating_sub(start_epoch);
+                stage.duration_ms = Some((duration.min(u64::MAX as u128)) as u64);
+            }
+        } else {
+            let mut stage = OperationStage::default();
+            stage.kind = kind.clone();
+            stage.status = OperationStageStatus::Failed;
+            stage.finished_at = Some(now_label);
+            stage.finished_at_epoch_ms = Some(now_epoch);
+            stage.detail = detail;
+            state.operation.stages.push(stage);
+        }
+
+        if state.operation.current_stage.as_ref() == Some(&kind) {
+            state.operation.current_stage = None;
+        }
+
+        let total: u64 = state
+            .operation
+            .stages
+            .iter()
+            .filter_map(|stage| stage.duration_ms)
+            .sum();
+        state.operation.total_elapsed_ms = if total > 0 { Some(total) } else { None };
+    }
+
+    pub fn set_operation_diagnostics(&self, indices: Vec<String>, budget: Option<String>) {
+        let mut state = self.state.write_unchecked();
+        state.operation.last_indices_used = indices;
+        state.operation.last_budget = budget;
     }
 
     pub fn clear_operation_status(&self) {
@@ -840,6 +1280,74 @@ fn toggle_value(set: &mut BTreeSet<String>, value: &str) {
     }
 }
 
+#[derive(Default)]
+struct RouterFilterFields {
+    digest: Option<String>,
+    query_hash: Option<String>,
+}
+
+fn extract_router_fields_from_event(event: &DialogueEvent) -> RouterFilterFields {
+    let mut fields = RouterFilterFields::default();
+    if !event.metadata.is_null() {
+        visit_router_fields(&event.metadata, &mut fields);
+    }
+    if let Some(invocation) = event.tool_invocation.as_ref() {
+        if let Ok(value) = serde_json::to_value(invocation) {
+            visit_router_fields(&value, &mut fields);
+        }
+    }
+    if let Some(result) = event.tool_result.as_ref() {
+        if let Ok(value) = serde_json::to_value(result) {
+            visit_router_fields(&value, &mut fields);
+        }
+    }
+    if let Some(reflection) = event.self_reflection.as_ref() {
+        if let Ok(value) = serde_json::to_value(reflection) {
+            visit_router_fields(&value, &mut fields);
+        }
+    }
+    fields
+}
+
+fn extract_router_fields_from_value(value: &Value) -> RouterFilterFields {
+    let mut fields = RouterFilterFields::default();
+    visit_router_fields(value, &mut fields);
+    fields
+}
+
+fn visit_router_fields(value: &Value, fields: &mut RouterFilterFields) {
+    match value {
+        Value::Object(map) => {
+            for (key, entry) in map {
+                let normalized = normalized_router_key(key);
+                if fields.digest.is_none() && normalized == "router_digest" {
+                    if let Some(text) = entry.as_str() {
+                        fields.digest = Some(text.to_string());
+                    }
+                }
+                if fields.query_hash.is_none() && normalized == "query_hash" {
+                    if let Some(text) = entry.as_str() {
+                        fields.query_hash = Some(text.to_string());
+                    }
+                }
+                if matches!(entry, Value::Object(_) | Value::Array(_)) {
+                    visit_router_fields(entry, fields);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                visit_router_fields(item, fields);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalized_router_key(key: &str) -> String {
+    key.trim().replace('-', "_").to_ascii_lowercase()
+}
+
 fn extract_event_degradation(event: &DialogueEvent) -> Option<String> {
     if let Some(result) = event.tool_result.as_ref() {
         if let Some(reason) = result.degradation_reason.as_ref() {
@@ -856,6 +1364,66 @@ fn extract_event_degradation(event: &DialogueEvent) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_iso_timestamp() -> String {
+    js_sys::Date::new(&JsValue::from_f64(js_sys::Date::now()))
+        .to_iso_string()
+        .into()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_iso_timestamp() -> String {
+    use time::OffsetDateTime;
+    let now = OffsetDateTime::now_utc();
+    format!("{}.{:03}Z", now.unix_timestamp(), now.millisecond())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_epoch_ms() -> u128 {
+    js_sys::Date::now() as u128
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_epoch_ms() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_millis())
+        .unwrap_or(0)
+}
+
+fn manifest_record_from_value(
+    manifest: &Value,
+    cycle_id: Option<String>,
+) -> Option<ManifestDigestRecord> {
+    if manifest.is_null() {
+        return None;
+    }
+
+    let digest = manifest
+        .get("manifest_digest")
+        .and_then(|value| value.as_str())
+        .or_else(|| manifest.get("digest").and_then(|value| value.as_str()))?
+        .to_string();
+
+    let mut cycle_ids = Vec::new();
+    if let Some(id) = cycle_id {
+        if !id.is_empty() {
+            cycle_ids.push(id);
+        }
+    }
+
+    let bundle = serde_json::from_value::<ContextBundleView>(manifest.clone()).ok();
+
+    Some(ManifestDigestRecord {
+        manifest_digest: digest,
+        cycle_ids,
+        seen_at: Some(now_iso_timestamp()),
+        bundle,
+        raw_manifest: Some(manifest.clone()),
+    })
 }
 
 pub(crate) fn to_snake_case(value: &str) -> String {

@@ -25,6 +25,7 @@ wasm-bindgen-futures = { workspace = true }
 tracing = { workspace = true }
 soulseed-agi-core-models = { workspace = true }
 web-sys = { workspace = true }
+js-sys = { workspace = true }
  time = { workspace = true }
 uuid = { workspace = true }
 

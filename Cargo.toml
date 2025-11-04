@@ -32,9 +32,10 @@ wasm-bindgen-futures = "0.4"
 tracing = "0.1"
 once_cell = "1.19"
 soulseed-agi-core-models = { path = "../soulseed/soulseed-agi-core-models" }
-web-sys = { version = "0.3", features = ["Window", "Navigator", "Clipboard", "EventSource", "Event", "MessageEvent"] }
+web-sys = { version = "0.3", features = ["Window", "Navigator", "Clipboard", "EventSource", "Event", "MessageEvent", "Document", "HtmlElement", "HtmlAnchorElement", "Blob", "Url", "Node"] }
 uuid = { version = "1.8", features = ["v4", "js"] }
 time = "0.3"
+js-sys = "0.3"
 
 [profile]
 

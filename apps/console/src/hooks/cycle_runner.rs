@@ -1,5 +1,4 @@
 use dioxus::prelude::*;
-#[cfg(target_arch = "wasm32")]
 use serde_json::Value;
 use soulseed_agi_core_models::dialogue_event::DialogueEvent as ThinDialogueEvent;
 use soulseed_agi_core_models::{AccessClass, ConversationScenario, Subject, SubjectRef};
@@ -12,12 +11,12 @@ use crate::models::{
     ContextBundleView, CycleSnapshotView, ExplainIndices, OutboxMessageView, TimelinePayload,
 };
 use crate::services::dialogue::{build_message_event, MessageEventDraft};
-use crate::state::{use_app_actions, use_app_state, AppActions, AppSignal};
+use crate::state::{use_app_actions, use_app_state, AppActions, AppSignal, OperationStageKind};
 #[cfg(target_arch = "wasm32")]
 use crate::API_CLIENT;
+use crate::APP_CONFIG;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
-use crate::APP_CONFIG;
 
 #[cfg(target_arch = "wasm32")]
 use {
@@ -85,8 +84,10 @@ pub fn use_cycle_runner() -> CycleRunnerHandle {
 fn trigger_cycle_impl(
     actions: &AppActions,
     app_state: &AppSignal,
-    mut is_running: Signal<bool>,
-    #[cfg(target_arch = "wasm32")] mut stream_handle: Signal<Option<SseHandle>>,
+    #[allow(unused_mut)] mut is_running: Signal<bool>,
+    #[cfg(target_arch = "wasm32")]
+    #[allow(unused_mut)]
+    mut stream_handle: Signal<Option<SseHandle>>,
     params: CycleTriggerParams,
 ) {
     let Some(config) = APP_CONFIG.get() else {
@@ -117,6 +118,9 @@ fn trigger_cycle_impl(
         actions.set_operation_error("请先选择会话".into());
         return;
     };
+
+    actions.operation_stage_reset();
+    actions.set_operation_diagnostics(Vec::new(), None);
 
     let draft = MessageEventDraft {
         tenant_id: tenant_id.as_str(),
@@ -155,21 +159,21 @@ fn trigger_cycle_impl(
         let session_label = session_id.clone();
         let stream_endpoint = config.stream_endpoint();
         let actions = actions.clone();
-        let is_running = is_running.clone();
+        let mut is_running = is_running.clone();
         let stream_handle = stream_handle.clone();
         let app_state_clone = app_state.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
             is_running.set(true);
+            actions.operation_stage_start(OperationStageKind::TriggerSubmit, "提交触发请求");
             let triggered_at = iso_timestamp_now();
             actions.set_operation_triggered(Some(triggered_at));
             actions.set_operation_trace(None);
             actions.set_operation_cycle(None);
             actions.set_operation_outcome(None);
             actions.set_operation_success("已提交觉知周期触发请求，等待响应".into());
-            actions.set_operation_context(Some(format!(
-                "触发觉知周期 @ {tenant_id}/{session_label}"
-            )));
+            actions
+                .set_operation_context(Some(format!("触发觉知周期 @ {tenant_id}/{session_label}")));
 
             let Some(client) = API_CLIENT.get().cloned() else {
                 actions.set_operation_error("Thin-Waist 客户端未初始化".into());
@@ -193,8 +197,17 @@ fn trigger_cycle_impl(
                         is_running.set(false);
                         return;
                     };
+                    actions.operation_stage_complete(
+                        OperationStageKind::TriggerSubmit,
+                        Some(format!("状态 {}", data.status)),
+                    );
+                    actions.set_operation_diagnostics(Vec::new(), None);
                     let cycle_id = data.cycle_id;
                     let cycle_id_label = cycle_id.to_string();
+                    actions.operation_stage_start(
+                        OperationStageKind::StreamAwait,
+                        format!("等待周期 #{cycle_id_label}"),
+                    );
                     actions.set_operation_cycle(Some(cycle_id_label.clone()));
                     actions.set_operation_success(format!(
                         "周期 {cycle_id_label} 已触发，状态 {}",
@@ -219,6 +232,7 @@ fn trigger_cycle_impl(
                         &err,
                         "post_trigger_dialogue",
                         "触发觉知周期失败",
+                        Some(OperationStageKind::TriggerSubmit),
                     );
                     actions.set_operation_cycle(None);
                     is_running.set(false);
@@ -242,8 +256,8 @@ fn start_cycle_stream(
     cycle_id_label: String,
     stream_endpoint: String,
     actions: AppActions,
-    is_running: Signal<bool>,
-    stream_handle: Signal<Option<SseHandle>>,
+    mut is_running: Signal<bool>,
+    mut stream_handle: Signal<Option<SseHandle>>,
     app_state: AppSignal,
 ) {
     let endpoint = stream_endpoint.trim_end_matches('/');
@@ -258,13 +272,13 @@ fn start_cycle_stream(
     let actions_on_message = actions.clone();
     let message_cycle_id = cycle_id;
     let message_cycle_label = cycle_id_label.clone();
-    let is_running_message = is_running.clone();
-    let stream_handle_message = stream_handle.clone();
+    let mut is_running_message = is_running.clone();
+    let mut stream_handle_message = stream_handle.clone();
     let on_message = move |message: SseMessage| {
         handle_cycle_stream_message(
             &actions_on_message,
-            &is_running_message,
-            &stream_handle_message,
+            &mut is_running_message,
+            &mut stream_handle_message,
             message_cycle_id,
             &message_cycle_label,
             app_state.clone(),
@@ -273,10 +287,11 @@ fn start_cycle_stream(
     };
 
     let actions_on_error = actions.clone();
-    let is_running_error = is_running.clone();
-    let stream_handle_error = stream_handle.clone();
+    let mut is_running_error = is_running.clone();
+    let mut stream_handle_error = stream_handle.clone();
     let error_cycle_id = cycle_id_label.clone();
     let on_error = move |err: String| {
+        actions_on_error.operation_stage_fail(OperationStageKind::StreamAwait, Some(err.clone()));
         actions_on_error.set_operation_error(format!("周期 {error_cycle_id} 流错误: {err}"));
         is_running_error.set(false);
         if let Some(handle) = stream_handle_error.write().take() {
@@ -294,6 +309,7 @@ fn start_cycle_stream(
             *writer = Some(handle);
         }
         Err(err) => {
+            actions.operation_stage_fail(OperationStageKind::StreamAwait, Some(err.to_string()));
             actions.set_operation_error(format!("无法订阅周期流: {err}"));
             is_running.set(false);
         }
@@ -303,8 +319,8 @@ fn start_cycle_stream(
 #[cfg(target_arch = "wasm32")]
 fn handle_cycle_stream_message(
     actions: &AppActions,
-    is_running: &Signal<bool>,
-    stream_handle: &Signal<Option<SseHandle>>,
+    is_running: &mut Signal<bool>,
+    stream_handle: &mut Signal<Option<SseHandle>>,
     cycle_id: u64,
     cycle_label: &str,
     app_state: AppSignal,
@@ -315,9 +331,12 @@ fn handle_cycle_stream_message(
             actions.set_operation_success(format!("周期 {cycle_label} 等待中…"));
         }
         Some("complete") => {
-            let status = extract_schedule_status(&message.data)
-                .unwrap_or("completed")
-                .to_string();
+            let status =
+                extract_schedule_status(&message.data).unwrap_or_else(|| "completed".to_string());
+            actions.operation_stage_complete(
+                OperationStageKind::StreamAwait,
+                Some(format!("完成 {status}")),
+            );
             is_running.set(false);
             if let Some(handle) = stream_handle.write().take() {
                 handle.close();
@@ -331,6 +350,7 @@ fn handle_cycle_stream_message(
             });
         }
         Some("timeout") => {
+            actions.operation_stage_fail(OperationStageKind::StreamAwait, Some("SSE 超时".into()));
             actions.set_operation_error(format!("周期 {cycle_label} 流超时"));
             is_running.set(false);
             if let Some(handle) = stream_handle.write().take() {
@@ -349,14 +369,154 @@ fn handle_cycle_stream_message(
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn extract_schedule_status(payload: &str) -> Option<&str> {
-    serde_json::from_str::<Value>(payload)
-        .ok()
-        .and_then(|value| value.pointer("/schedule/status").and_then(|v| v.as_str()))
+fn normalized_key(key: &str) -> String {
+    key.trim().replace('-', "_").to_ascii_lowercase()
 }
 
-fn record_client_error(actions: &AppActions, err: &ClientError, context: &str, fallback: &str) {
+pub(crate) fn extract_indices_from_details(value: &Value) -> Vec<String> {
+    fn visit(value: &Value, acc: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, entry) in map {
+                    let normalized = normalized_key(key);
+                    if normalized == "indices_used" || normalized == "indices" {
+                        if let Some(array) = entry.as_array() {
+                            for item in array {
+                                if let Some(text) = item.as_str() {
+                                    if !acc
+                                        .iter()
+                                        .any(|existing| existing.eq_ignore_ascii_case(text))
+                                    {
+                                        acc.push(text.to_string());
+                                    }
+                                }
+                            }
+                        } else if let Some(text) = entry.as_str() {
+                            if !acc
+                                .iter()
+                                .any(|existing| existing.eq_ignore_ascii_case(text))
+                            {
+                                acc.push(text.to_string());
+                            }
+                        }
+                    } else {
+                        visit(entry, acc);
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    visit(item, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut collected = Vec::new();
+    visit(value, &mut collected);
+    collected
+}
+
+pub(crate) fn extract_budget_hint(value: &Value) -> Option<String> {
+    fn visit(value: &Value) -> Option<String> {
+        match value {
+            Value::Object(map) => {
+                let tokens_spent = map.get("tokens_spent").and_then(|v| v.as_u64());
+                let tokens_allowed = map.get("tokens_allowed").and_then(|v| v.as_u64());
+                let wall_spent = map.get("walltime_ms_used").and_then(|v| v.as_u64());
+                let wall_allowed = map.get("walltime_ms_allowed").and_then(|v| v.as_u64());
+                if tokens_spent.is_some()
+                    || tokens_allowed.is_some()
+                    || wall_spent.is_some()
+                    || wall_allowed.is_some()
+                {
+                    let mut parts = Vec::new();
+                    if tokens_spent.is_some() || tokens_allowed.is_some() {
+                        parts.push(format!(
+                            "tokens {}/{}",
+                            tokens_spent
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "-".into()),
+                            tokens_allowed
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "-".into())
+                        ));
+                    }
+                    if wall_spent.is_some() || wall_allowed.is_some() {
+                        parts.push(format!(
+                            "wall {}ms/{}ms",
+                            wall_spent
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "-".into()),
+                            wall_allowed
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "-".into())
+                        ));
+                    }
+                    if !parts.is_empty() {
+                        return Some(parts.join(" · "));
+                    }
+                }
+
+                if map.keys().any(|key| normalized_key(key).contains("budget")) {
+                    for entry in map.values() {
+                        if let Some(result) = visit(entry) {
+                            return Some(result);
+                        }
+                    }
+                } else {
+                    for entry in map.values() {
+                        if let Some(result) = visit(entry) {
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    if let Some(result) = visit(item) {
+                        return Some(result);
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    visit(value)
+}
+
+fn extract_schedule_status(payload: &str) -> Option<String> {
+    serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/schedule/status")
+                .and_then(|v| v.as_str().map(|text| text.to_string()))
+        })
+}
+
+fn record_client_error(
+    actions: &AppActions,
+    err: &ClientError,
+    context: &str,
+    fallback: &str,
+    stage: Option<OperationStageKind>,
+) {
+    if let Some(kind) = stage.clone() {
+        actions.operation_stage_fail(kind, Some(err.to_string()));
+    }
+
+    if let Some(details) = err.trace_context() {
+        let indices = extract_indices_from_details(details);
+        let budget = extract_budget_hint(details);
+        actions.set_operation_diagnostics(indices, budget);
+    } else {
+        actions.set_operation_diagnostics(Vec::new(), None);
+    }
+
     if let Some(status) = err.status().map(|code| code.as_u16()) {
         let trace_id = err
             .trace_context()
@@ -423,6 +583,12 @@ async fn refresh_after_cycle(
     let mut refresh_ok = true;
 
     actions.set_timeline_loading(true);
+    actions.operation_stage_start(
+        OperationStageKind::SnapshotRefresh,
+        format!("刷新周期 #{cycle_label}"),
+    );
+    actions.set_operation_diagnostics(Vec::new(), None);
+
     actions.set_timeline_error(None);
     match client
         .get_timeline::<_, TimelinePayload>(&tenant, &query)
@@ -446,7 +612,13 @@ async fn refresh_after_cycle(
             }
         }
         Err(err) => {
-            record_client_error(&actions, &err, "refresh_timeline", "刷新时间线失败");
+            record_client_error(
+                &actions,
+                &err,
+                "refresh_timeline",
+                "刷新时间线失败",
+                Some(OperationStageKind::SnapshotRefresh),
+            );
             actions.set_timeline_loading(false);
             refresh_ok = false;
         }
@@ -472,9 +644,23 @@ async fn refresh_after_cycle(
         (bundle, explain) => {
             let mut message = String::new();
             if let Err(err) = bundle {
+                record_client_error(
+                    &actions,
+                    &err,
+                    "context_bundle",
+                    "上下文加载失败",
+                    Some(OperationStageKind::SnapshotRefresh),
+                );
                 message.push_str(&format!("上下文加载失败: {err}"));
             }
             if let Err(err) = explain {
+                record_client_error(
+                    &actions,
+                    &err,
+                    "explain_indices",
+                    "Explain 指纹加载失败",
+                    Some(OperationStageKind::SnapshotRefresh),
+                );
                 if !message.is_empty() {
                     message.push_str("；");
                 }
@@ -488,6 +674,10 @@ async fn refresh_after_cycle(
 
     actions.set_ace_snapshot_loading(true);
     actions.set_ace_snapshot_error(None);
+    actions.operation_stage_start(
+        OperationStageKind::OutboxReady,
+        format!("加载 Outbox #{cycle_label}"),
+    );
     let snapshot_res = client
         .get_cycle_snapshot::<CycleSnapshotView>(&cycle_label, Some(&tenant))
         .await;
@@ -499,8 +689,13 @@ async fn refresh_after_cycle(
         (Ok(snapshot_env), Ok(outbox_env)) => {
             if let Some(snapshot) = snapshot_env.data {
                 let outbox = outbox_env.data.unwrap_or_default();
+                let outbox_count = outbox.len();
                 let outcome = snapshot.outcomes.last().cloned();
                 actions.store_ace_snapshot(cycle_label.clone(), snapshot, outbox);
+                actions.operation_stage_complete(
+                    OperationStageKind::OutboxReady,
+                    Some(format!("Outbox {} 条", outbox_count)),
+                );
                 actions.set_operation_outcome(outcome);
             } else {
                 actions.set_ace_snapshot_error(Some("周期快照为空".into()));
@@ -512,26 +707,49 @@ async fn refresh_after_cycle(
             let mut message = String::new();
             if let Err(err) = snapshot {
                 message.push_str(&format!("快照加载失败: {err}"));
+                record_client_error(
+                    &actions,
+                    &err,
+                    "cycle_snapshot",
+                    "周期快照加载失败",
+                    Some(OperationStageKind::SnapshotRefresh),
+                );
             }
             if let Err(err) = outbox {
                 if !message.is_empty() {
                     message.push_str("；");
                 }
                 message.push_str(&format!("Outbox 加载失败: {err}"));
+                record_client_error(
+                    &actions,
+                    &err,
+                    "cycle_outbox",
+                    "Outbox 加载失败",
+                    Some(OperationStageKind::OutboxReady),
+                );
             }
-            actions.set_ace_snapshot_error(Some(
-                if message.is_empty() {
-                    "加载周期快照失败".into()
-                } else {
-                    message
-                },
-            ));
+            let combined_message = if message.is_empty() {
+                "加载周期快照失败".into()
+            } else {
+                message
+            };
+            actions.set_ace_snapshot_error(Some(combined_message.clone()));
             actions.set_operation_outcome(None);
+            actions.operation_stage_fail(
+                OperationStageKind::OutboxReady,
+                Some(combined_message.clone()),
+            );
+            actions
+                .operation_stage_fail(OperationStageKind::SnapshotRefresh, Some(combined_message));
             refresh_ok = false;
         }
     }
 
     if refresh_ok {
+        actions.operation_stage_complete(
+            OperationStageKind::SnapshotRefresh,
+            Some(format!("周期 {cycle_label} 状态 {status}")),
+        );
         actions.set_operation_success(format!("周期 {cycle_label} 完成: {status}，视图已更新"));
         actions.set_operation_cycle(Some(cycle_label.clone()));
         actions.set_operation_context(Some(format!("觉知周期 #{cycle_label}")));

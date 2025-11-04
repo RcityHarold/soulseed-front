@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use thiserror::Error;
 
 #[derive(Clone, Copy)]
@@ -18,21 +20,21 @@ impl Default for SseConnectOptions {
 }
 
 pub struct SseCallbacks {
-    pub on_open: Box<dyn Fn() + 'static>,
-    pub on_message: Box<dyn Fn(SseMessage) + 'static>,
-    pub on_error: Box<dyn Fn(String) + 'static>,
+    pub on_open: Rc<RefCell<Box<dyn FnMut() + 'static>>>,
+    pub on_message: Rc<RefCell<Box<dyn FnMut(SseMessage) + 'static>>>,
+    pub on_error: Rc<RefCell<Box<dyn FnMut(String) + 'static>>>,
 }
 
 impl SseCallbacks {
     pub fn new(
-        on_open: impl Fn() + 'static,
-        on_message: impl Fn(SseMessage) + 'static,
-        on_error: impl Fn(String) + 'static,
+        on_open: impl FnMut() + 'static,
+        on_message: impl FnMut(SseMessage) + 'static,
+        on_error: impl FnMut(String) + 'static,
     ) -> Self {
         Self {
-            on_open: Box::new(on_open),
-            on_message: Box::new(on_message),
-            on_error: Box::new(on_error),
+            on_open: Rc::new(RefCell::new(Box::new(on_open))),
+            on_message: Rc::new(RefCell::new(Box::new(on_message))),
+            on_error: Rc::new(RefCell::new(Box::new(on_error))),
         }
     }
 }
@@ -151,7 +153,7 @@ mod wasm {
                 }
                 Err(err) => {
                     let reason = js_value_to_string(&err);
-                    (self.callbacks.on_error)(format!("SSE 连接失败: {reason}"));
+                    self.callbacks.on_error.borrow_mut()(format!("SSE 连接失败: {reason}"));
                     self.schedule_reconnect();
                 }
             }
@@ -178,14 +180,14 @@ mod wasm {
             let on_open = Closure::wrap(Box::new(move |_evt: Event| {
                 inner.last_event_ms.set(Date::now());
                 inner.start_heartbeat();
-                (inner.callbacks.on_open)();
+                inner.callbacks.on_open.borrow_mut()();
             }) as Box<dyn FnMut(_)>);
             es.set_onopen(Some(on_open.as_ref().unchecked_ref()));
             on_open.forget();
 
             let inner = Rc::clone(self);
             let on_error = Closure::wrap(Box::new(move |_evt: Event| {
-                (inner.callbacks.on_error)("SSE 连接中断，准备重试".into());
+                inner.callbacks.on_error.borrow_mut()("SSE 连接中断，准备重试".into());
                 inner.restart_event_source();
             }) as Box<dyn FnMut(_)>);
             es.set_onerror(Some(on_error.as_ref().unchecked_ref()));
@@ -224,7 +226,7 @@ mod wasm {
                     .unwrap_or_else(|| String::from("null")),
             };
 
-            (self.callbacks.on_message)(SseMessage {
+            self.callbacks.on_message.borrow_mut()(SseMessage {
                 event: event_type,
                 data,
             });
@@ -273,7 +275,7 @@ mod wasm {
                 }
                 let elapsed = Date::now() - inner.last_event_ms.get();
                 if elapsed > timeout_ms as f64 {
-                    (inner.callbacks.on_error)("SSE 心跳超时，尝试重新连接".into());
+                    inner.callbacks.on_error.borrow_mut()("SSE 心跳超时，尝试重新连接".into());
                     inner.restart_event_source();
                 }
             });

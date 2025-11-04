@@ -80,6 +80,10 @@ pub fn sample_context_bundle() -> (ContextBundleView, ExplainIndices) {
             target_tokens: 1_024,
             projected_tokens: 620,
         }),
+        manifest_digest: Some("demo-manifest-digest".into()),
+        version: Some(1),
+        working_generation: Some(0),
+        degradation_reason: None,
     };
 
     let indices = ExplainIndices {

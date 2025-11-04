@@ -8,8 +8,6 @@ use crate::models::{
     AceCycleStatus, AceCycleSummary, AceLane, AwarenessEvent, AwarenessEventType,
     CycleSnapshotView, OutboxMessageView,
 };
-#[cfg(target_arch = "wasm32")]
-use crate::models::{ContextBundleView, ExplainIndices, TimelinePayload};
 use crate::state::{use_app_actions, use_app_state};
 use crate::{API_CLIENT, APP_CONFIG};
 
@@ -53,10 +51,13 @@ pub fn use_ace_cycles() {
                     .and_then(|cfg| cfg.default_tenant_id.clone())
             });
 
-            let Some(tenant_id) = tenant_id else {
-                actions.set_ace_error(Some("请先选择租户".into()));
-                actions.set_ace_loading(false);
-                return;
+            let tenant_id = match tenant_id {
+                Some(value) => value,
+                None => {
+                    actions.set_ace_error(Some("请先选择租户".into()));
+                    actions.set_ace_loading(false);
+                    return;
+                }
             };
 
             let client = API_CLIENT.get().cloned();
@@ -155,10 +156,13 @@ pub fn use_ace_cycles() {
         let actions = actions_for_details.clone();
         let state = state.clone();
         async move {
-            let Some(selected) = selected_cycle_id.clone() else {
-                actions.set_ace_snapshot_loading(false);
-                actions.set_ace_snapshot_error(None);
-                return;
+            let selected = match selected_cycle_id.clone() {
+                Some(value) => value,
+                None => {
+                    actions.set_ace_snapshot_loading(false);
+                    actions.set_ace_snapshot_error(None);
+                    return;
+                }
             };
 
             let tenant_id = tenant_for_details.clone().or_else(|| {
@@ -167,10 +171,13 @@ pub fn use_ace_cycles() {
                     .and_then(|cfg| cfg.default_tenant_id.clone())
             });
 
-            let Some(tenant_id) = tenant_id else {
-                actions.set_ace_snapshot_error(Some("请先选择租户".into()));
-                actions.set_ace_snapshot_loading(false);
-                return;
+            let tenant_id = match tenant_id {
+                Some(value) => value,
+                None => {
+                    actions.set_ace_snapshot_error(Some("请先选择租户".into()));
+                    actions.set_ace_snapshot_loading(false);
+                    return;
+                }
             };
 
             {

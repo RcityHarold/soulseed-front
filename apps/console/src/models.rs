@@ -4,8 +4,8 @@ use serde_json::Value;
 pub use soulseed_agi_core_models::legacy::dialogue_event::DialogueEvent;
 pub use soulseed_agi_core_models::{
     AccessClass, AwarenessAnchor, AwarenessDegradationReason, AwarenessEvent, AwarenessEventType,
-    ConversationScenario, DecisionPath, DecisionPlan, DialogueEventType, SyncPointKind,
-    SyncPointReport,
+    AwarenessFork, ConversationScenario, DecisionPath, DecisionPlan, DialogueEventType,
+    SyncPointKind, SyncPointReport,
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -214,13 +214,47 @@ pub struct CycleSnapshotView {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RouterDecisionView {
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub plan: Value,
+    pub plan: RoutePlanView,
     pub decision_path: DecisionPath,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected: Vec<(String, String)>,
     pub context_digest: String,
     pub issued_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RoutePlanView {
+    pub cycle_id: u64,
+    pub anchor: AwarenessAnchor,
+    pub fork: AwarenessFork,
+    pub decision_plan: DecisionPlan,
+    pub budget: RouteBudgetEstimate,
+    pub priority: f32,
+    pub explain: RouteExplainView,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RouteBudgetEstimate {
+    pub tokens: u32,
+    pub walltime_ms: u32,
+    pub external_cost: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RouteExplainView {
+    pub routing_seed: u64,
+    pub router_digest: String,
+    pub router_config_digest: String,
+    #[serde(default)]
+    pub indices_used: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degradation_reason: Option<String>,
+    #[serde(default)]
+    pub diagnostics: Value,
+    #[serde(default)]
+    pub rejected: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -240,9 +274,30 @@ pub struct ContextBundleView {
     pub anchor: ContextAnchor,
     #[serde(default)]
     pub segments: Vec<BundleSegment>,
+    #[serde(default)]
     pub explain: ExplainBundle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<BundleBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_generation: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degradation_reason: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ManifestDigestRecord {
+    pub manifest_digest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cycle_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<ContextBundleView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_manifest: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

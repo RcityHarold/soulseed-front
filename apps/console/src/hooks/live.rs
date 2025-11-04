@@ -25,7 +25,7 @@ pub fn use_live_stream() {
 
     use_future(use_reactive!(|(tenant, session)| {
         let actions = actions.clone();
-        let handle_slot = handle_slot.clone();
+        let mut handle_slot = handle_slot.clone();
         async move {
             {
                 let mut writer = handle_slot.write();
@@ -93,7 +93,7 @@ pub fn use_live_stream() {
 
             match SseClient::connect(&url, callbacks, SseConnectOptions::default()) {
                 Ok(handle) => {
-                    handle_slot.write().replace(Some(handle));
+                    *handle_slot.write() = Some(handle);
                 }
                 Err(err) => {
                     actions.set_live_connected(false);

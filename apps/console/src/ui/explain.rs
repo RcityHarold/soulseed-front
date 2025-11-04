@@ -1,5 +1,5 @@
 use crate::models::{AceExplainSection, DfrExplainSection, ExplainIndices, ExplainSection};
-use crate::state::{use_app_actions, use_app_state, AppActions};
+use crate::state::{use_app_actions, use_app_state, AppActions, AuditActionKind};
 use dioxus::prelude::*;
 
 #[component]
@@ -15,7 +15,7 @@ pub fn ExplainDiagnosticPanel() -> Element {
         let summary = summarize_indices(indices);
         rsx! {
             div { class: "space-y-4",
-                {render_summary(&summary)}
+                {render_summary(&summary, indices)}
                 div { class: "grid gap-3 xl:grid-cols-2",
                     {render_section(actions.clone(), "Graph", &indices.graph)}
                     {render_section(actions.clone(), "Context", &indices.context)}
@@ -73,9 +73,12 @@ fn summarize_indices(indices: &ExplainIndices) -> Summary {
     summary
 }
 
-fn render_summary(summary: &Summary) -> Element {
+fn render_summary(summary: &Summary, indices: &ExplainIndices) -> Element {
     let missing_count = summary.missing.len();
     let degraded_count = summary.degraded.len();
+    let router_digest = indices.dfr.router_digest.as_deref().unwrap_or("-");
+    let context_query = indices.context.query_hash.as_deref().unwrap_or("-");
+    let context_indices = &indices.context.indices_used;
 
     rsx! {
         div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm text-xs text-slate-600 space-y-2",
@@ -83,6 +86,26 @@ fn render_summary(summary: &Summary) -> Element {
                 span { class: "font-semibold text-slate-800", "SLO 总览" }
                 span { class: "rounded bg-amber-100 px-2 py-0.5 text-amber-800", {format!("未命中索引 {missing_count}")} }
                 span { class: "rounded bg-red-100 px-2 py-0.5 text-red-700", {format!("降级 {degraded_count}")} }
+            }
+            div { class: "flex flex-wrap items-center gap-3 text-[11px] text-slate-500",
+                span { class: "font-semibold text-slate-700", "Router Digest" }
+                span { class: "font-mono break-all", "{router_digest}" }
+            }
+            div { class: "space-y-1",
+                span { class: "text-[11px] font-semibold text-slate-700", "Context Indices" }
+                if context_indices.is_empty() {
+                    span { class: "rounded bg-slate-100 px-2 py-0.5 text-slate-500", "无" }
+                } else {
+                    div { class: "flex flex-wrap gap-1",
+                        for idx in context_indices.iter() {
+                            span { class: "rounded bg-slate-200 px-2 py-0.5 text-slate-700", "{idx}" }
+                        }
+                    }
+                }
+            }
+            div { class: "space-y-1",
+                span { class: "text-[11px] font-semibold text-slate-700", "Context Query Hash" }
+                span { class: "font-mono text-[11px] text-slate-600 break-all", "{context_query}" }
             }
             if !summary.missing.is_empty() {
                 div { class: "flex flex-wrap gap-1",
@@ -242,10 +265,13 @@ fn format_reason(reason: &str) -> String {
 }
 
 fn copy_to_clipboard(actions: AppActions, label: String, value: String) {
+    actions.record_audit_event(AuditActionKind::Copy, label.clone(), label.clone());
     #[cfg(target_arch = "wasm32")]
     {
         use wasm_bindgen_futures::{spawn_local, JsFuture};
 
+        let actions_clone = actions.clone();
+        let label_clone = label.clone();
         spawn_local(async move {
             let result = async {
                 let window = web_sys::window().ok_or(())?;
@@ -256,8 +282,8 @@ fn copy_to_clipboard(actions: AppActions, label: String, value: String) {
             .await;
 
             match result {
-                Ok(_) => actions.set_operation_success(format!("{label} 已复制")),
-                Err(_) => actions.set_operation_error(format!("{label} 复制失败")),
+                Ok(_) => actions_clone.set_operation_success(format!("{label_clone} 已复制")),
+                Err(_) => actions_clone.set_operation_error(format!("{label_clone} 复制失败")),
             }
         });
     }

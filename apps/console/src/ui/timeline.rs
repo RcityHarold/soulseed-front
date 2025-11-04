@@ -4,16 +4,152 @@ use crate::models::{
 };
 use crate::state::{
     normalize_filter_value, to_snake_case, use_app_actions, use_app_state, AppActions,
-    TimelineFilters, TimelineState,
+    AuditActionKind, TimelineFilters, TimelineState,
 };
 use crate::APP_CONFIG;
 use dioxus::prelude::*;
-use serde_json::json;
-use std::collections::{BTreeSet, HashMap};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const TIMELINE_CONTAINER_CLASS: &str = "space-y-4";
 const CHIP_BASE_CLASS: &str = "px-3 py-1 rounded-full border text-xs transition-colors";
 const CHIP_ACTIVE_CLASS: &str = "bg-slate-900 text-white border-slate-900";
+#[derive(Clone, Debug, Default)]
+struct RouterInsights {
+    router_digest: Option<String>,
+    indices_used: Vec<String>,
+    query_hash: Option<String>,
+}
+
+impl RouterInsights {
+    fn has_data(&self) -> bool {
+        self.router_digest.is_some() || !self.indices_used.is_empty() || self.query_hash.is_some()
+    }
+
+    fn merge(&mut self, other: RouterInsights) {
+        if self.router_digest.is_none() {
+            self.router_digest = other.router_digest;
+        }
+        if self.query_hash.is_none() {
+            self.query_hash = other.query_hash;
+        }
+        if self.indices_used.is_empty() {
+            self.indices_used = other.indices_used;
+        } else {
+            for value in other.indices_used {
+                if !self
+                    .indices_used
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&value))
+                {
+                    self.indices_used.push(value);
+                }
+            }
+        }
+    }
+}
+
+fn collect_router_insights(value: &Value) -> RouterInsights {
+    let mut insights = RouterInsights::default();
+    scan_router_fields(value, &mut insights);
+    insights
+}
+
+fn scan_router_fields(value: &Value, insights: &mut RouterInsights) {
+    match value {
+        Value::Object(map) => {
+            for (key, entry) in map {
+                let normalized = normalize_key(key);
+                match normalized.as_str() {
+                    "router_digest" | "routerdigest" => {
+                        if insights.router_digest.is_none() {
+                            if let Some(text) = entry.as_str() {
+                                insights.router_digest = Some(text.to_string());
+                            }
+                        }
+                    }
+                    "indices_used" | "indicesused" => {
+                        if insights.indices_used.is_empty() {
+                            if let Some(array) = entry.as_array() {
+                                for item in array {
+                                    if let Some(text) = item.as_str() {
+                                        push_unique(&mut insights.indices_used, text);
+                                    }
+                                }
+                            } else if let Some(text) = entry.as_str() {
+                                push_unique(&mut insights.indices_used, text);
+                            }
+                        }
+                    }
+                    "query_hash" | "queryhash" => {
+                        if insights.query_hash.is_none() {
+                            if let Some(text) = entry.as_str() {
+                                insights.query_hash = Some(text.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if let Value::Object(_) | Value::Array(_) = entry {
+                    scan_router_fields(entry, insights);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                scan_router_fields(item, insights);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_unique(list: &mut Vec<String>, value: &str) {
+    if !list
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(value))
+    {
+        list.push(value.to_string());
+    }
+}
+
+fn normalize_key(key: &str) -> String {
+    key.trim().replace('-', "_").to_ascii_lowercase()
+}
+
+fn render_router_insights(insights: &RouterInsights) -> Option<Element> {
+    if !insights.has_data() {
+        return None;
+    }
+
+    let digest_label = insights.router_digest.as_deref().unwrap_or("未提供");
+
+    Some(rsx! {
+        div { class: "rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600 space-y-1",
+            div { class: "flex flex-wrap items-center gap-2",
+                span { class: "font-semibold text-slate-700", "路由 Digest" }
+                span { class: "font-mono break-all text-slate-600", "{digest_label}" }
+            }
+            if !insights.indices_used.is_empty() {
+                div { class: "space-y-1",
+                    span { class: "text-[11px] font-semibold text-slate-500", "Indices Used" }
+                    div { class: "flex flex-wrap gap-1",
+                        for idx in insights.indices_used.iter() {
+                            span { class: "rounded bg-slate-200 px-2 py-0.5 text-[11px] text-slate-700", "{idx}" }
+                        }
+                    }
+                }
+            }
+            if let Some(query) = insights.query_hash.as_ref() {
+                div { class: "space-y-1",
+                    span { class: "text-[11px] font-semibold text-slate-500", "Query Hash" }
+                    span { class: "font-mono text-[11px] text-slate-600 break-all", "{query}" }
+                }
+            }
+        }
+    })
+}
+
 const CHIP_INACTIVE_CLASS: &str = "bg-white text-slate-700 border-slate-200 hover:border-slate-400";
 
 #[derive(Clone)]
@@ -56,6 +192,8 @@ pub fn TimelineView() -> Element {
     let access_options = collect_access_options(&timeline.events);
     let degradation_options = collect_degradation_options(&timeline.events, &awareness);
     let awareness_options = collect_awareness_options(&awareness);
+    let router_digest_options = collect_router_digest_options(&timeline.events, &awareness);
+    let query_hash_options = collect_query_hash_options(&timeline.events, &awareness);
 
     rsx! {
         section { class: TIMELINE_CONTAINER_CLASS,
@@ -77,6 +215,8 @@ pub fn TimelineView() -> Element {
                 access_options,
                 degradation_options,
                 awareness_options,
+                router_digest_options,
+                query_hash_options,
                 actions: actions.clone(),
             }
 
@@ -161,7 +301,17 @@ fn AuditToolbar(props: AuditToolbarProps) -> Element {
         let data = timeline.clone();
         move |_| {
             let content = timeline_to_json(&data);
-            copy_text_to_clipboard(actions.clone(), "时间线 JSON", content);
+            actions.record_audit_event(
+                AuditActionKind::Export,
+                "时间线 JSON",
+                "timeline:export_json",
+            );
+            copy_text_to_clipboard(
+                actions.clone(),
+                "时间线 JSON",
+                "timeline:json_copy",
+                content,
+            );
         }
     };
 
@@ -170,7 +320,12 @@ fn AuditToolbar(props: AuditToolbarProps) -> Element {
         let data = timeline.clone();
         move |_| {
             let content = timeline_to_csv(&data);
-            copy_text_to_clipboard(actions.clone(), "时间线 CSV", content);
+            actions.record_audit_event(
+                AuditActionKind::Export,
+                "时间线 CSV",
+                "timeline:export_csv",
+            );
+            copy_text_to_clipboard(actions.clone(), "时间线 CSV", "timeline:csv_copy", content);
         }
     };
 
@@ -208,6 +363,8 @@ struct FilterToolbarProps {
     access_options: Vec<FilterOption>,
     degradation_options: Vec<FilterOption>,
     awareness_options: Vec<FilterOption>,
+    router_digest_options: Vec<FilterOption>,
+    query_hash_options: Vec<FilterOption>,
     actions: AppActions,
 }
 
@@ -228,6 +385,8 @@ fn FilterToolbar(props: FilterToolbarProps) -> Element {
         && props.access_options.is_empty()
         && props.degradation_options.is_empty()
         && props.awareness_options.is_empty()
+        && props.router_digest_options.is_empty()
+        && props.query_hash_options.is_empty()
     {
         return rsx! { div {} };
     }
@@ -334,6 +493,60 @@ fn FilterToolbar(props: FilterToolbarProps) -> Element {
                                     let actions = actions.clone();
                                     let value = option.value.clone();
                                     move |_| actions.toggle_awareness_type(&value)
+                                },
+                                span { class: "text-xs font-medium", "{option.label}" }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !props.router_digest_options.is_empty() {
+                div { class: "space-y-1",
+                    span { class: "text-[11px] font-semibold uppercase tracking-wide text-slate-500", "Router Digest" }
+                    div { class: "flex flex-wrap gap-2",
+                        for option in props.router_digest_options.iter() {
+                            button {
+                                key: format!("router-{}", option.value),
+                                class: {
+                                    let active = filters.router_digests.contains(&option.value);
+                                    format!(
+                                        "{} {}",
+                                        CHIP_BASE_CLASS,
+                                        if active { CHIP_ACTIVE_CLASS } else { CHIP_INACTIVE_CLASS }
+                                    )
+                                },
+                                onclick: {
+                                    let actions = actions.clone();
+                                    let value = option.value.clone();
+                                    move |_| actions.toggle_router_digest(&value)
+                                },
+                                span { class: "text-xs font-medium", "{option.label}" }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !props.query_hash_options.is_empty() {
+                div { class: "space-y-1",
+                    span { class: "text-[11px] font-semibold uppercase tracking-wide text-slate-500", "Query Hash" }
+                    div { class: "flex flex-wrap gap-2",
+                        for option in props.query_hash_options.iter() {
+                            button {
+                                key: format!("query-{}", option.value),
+                                class: {
+                                    let active = filters.query_hashes.contains(&option.value);
+                                    format!(
+                                        "{} {}",
+                                        CHIP_BASE_CLASS,
+                                        if active { CHIP_ACTIVE_CLASS } else { CHIP_INACTIVE_CLASS }
+                                    )
+                                },
+                                onclick: {
+                                    let actions = actions.clone();
+                                    let value = option.value.clone();
+                                    move |_| actions.toggle_query_hash(&value)
                                 },
                                 span { class: "text-xs font-medium", "{option.label}" }
                             }
@@ -461,6 +674,22 @@ fn EventCard(props: EventCardProps) -> Element {
                 .join("、"),
         )
     };
+    let mut router_insights = collect_router_insights(&event.metadata);
+    if let Some(tool_invocation) = event.tool_invocation.as_ref() {
+        if let Ok(value) = serde_json::to_value(tool_invocation) {
+            router_insights.merge(collect_router_insights(&value));
+        }
+    }
+    if let Some(tool_result) = event.tool_result.as_ref() {
+        if let Ok(value) = serde_json::to_value(tool_result) {
+            router_insights.merge(collect_router_insights(&value));
+        }
+    }
+    if let Some(self_reflection) = event.self_reflection.as_ref() {
+        if let Ok(value) = serde_json::to_value(self_reflection) {
+            router_insights.merge(collect_router_insights(&value));
+        }
+    }
 
     let mut tag_input = use_signal(|| String::new());
 
@@ -499,6 +728,9 @@ fn EventCard(props: EventCardProps) -> Element {
                 div { class: "rounded bg-slate-50 p-2 text-[11px] text-slate-500 break-words",
                     "metadata: {event.metadata}"
                 }
+            }
+            if let Some(router_view) = render_router_insights(&router_insights) {
+                {router_view}
             }
             if !tags.is_empty() {
                 div { class: "flex flex-wrap gap-2",
@@ -610,6 +842,9 @@ fn AwarenessColumn(props: AwarenessColumnProps) -> Element {
                             {
                                 div { class: "mt-1 text-[11px] text-amber-700", "{reason}" }
                             }
+                            if let Some(router_view) = render_router_insights(&collect_router_insights(&item.payload)) {
+                                {router_view}
+                            }
                         }
                     }
                 }
@@ -691,6 +926,82 @@ fn scenario_options() -> Vec<ScenarioOption> {
             label: "AI 群组",
         },
     ]
+}
+
+fn router_insights_from_event(event: &DialogueEvent) -> RouterInsights {
+    let mut insights = collect_router_insights(&event.metadata);
+    if let Some(tool_invocation) = event.tool_invocation.as_ref() {
+        if let Ok(value) = serde_json::to_value(tool_invocation) {
+            insights.merge(collect_router_insights(&value));
+        }
+    }
+    if let Some(tool_result) = event.tool_result.as_ref() {
+        if let Ok(value) = serde_json::to_value(tool_result) {
+            insights.merge(collect_router_insights(&value));
+        }
+    }
+    if let Some(self_reflection) = event.self_reflection.as_ref() {
+        if let Ok(value) = serde_json::to_value(self_reflection) {
+            insights.merge(collect_router_insights(&value));
+        }
+    }
+    insights
+}
+
+fn collect_router_digest_options(
+    events: &[DialogueEvent],
+    awareness: &[AwarenessEvent],
+) -> Vec<FilterOption> {
+    let mut map: BTreeMap<String, String> = BTreeMap::new();
+
+    for event in events {
+        let insights = router_insights_from_event(event);
+        if let Some(digest) = insights.router_digest.as_ref() {
+            let normalized = normalize_filter_value(digest);
+            map.entry(normalized).or_insert_with(|| digest.to_string());
+        }
+    }
+
+    for item in awareness {
+        let insights = collect_router_insights(&item.payload);
+        if let Some(digest) = insights.router_digest.as_ref() {
+            let normalized = normalize_filter_value(digest);
+            map.entry(normalized).or_insert_with(|| digest.to_string());
+        }
+    }
+
+    map.into_iter()
+        .map(|(value, label)| FilterOption { value, label })
+        .collect()
+}
+
+fn collect_query_hash_options(
+    events: &[DialogueEvent],
+    awareness: &[AwarenessEvent],
+) -> Vec<FilterOption> {
+    let mut map: BTreeMap<String, String> = BTreeMap::new();
+
+    for event in events {
+        let insights = router_insights_from_event(event);
+        if let Some(query_hash) = insights.query_hash.as_ref() {
+            let normalized = normalize_filter_value(query_hash);
+            map.entry(normalized)
+                .or_insert_with(|| query_hash.to_string());
+        }
+    }
+
+    for item in awareness {
+        let insights = collect_router_insights(&item.payload);
+        if let Some(query_hash) = insights.query_hash.as_ref() {
+            let normalized = normalize_filter_value(query_hash);
+            map.entry(normalized)
+                .or_insert_with(|| query_hash.to_string());
+        }
+    }
+
+    map.into_iter()
+        .map(|(value, label)| FilterOption { value, label })
+        .collect()
 }
 
 fn collect_role_options(events: &[DialogueEvent]) -> Vec<FilterOption> {
@@ -973,8 +1284,11 @@ fn csv_escape(value: &str) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn copy_text_to_clipboard(actions: AppActions, label: &str, content: String) {
-    let label = label.to_string();
+fn copy_text_to_clipboard(actions: AppActions, label: &str, target: &str, content: String) {
+    let label_text = label.to_string();
+    let target_text = target.to_string();
+    actions.record_audit_event(AuditActionKind::Copy, label_text.clone(), target_text);
+    let actions_clone = actions.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let window = web_sys::window().ok_or(())?;
@@ -988,13 +1302,14 @@ fn copy_text_to_clipboard(actions: AppActions, label: &str, content: String) {
         .await;
 
         match result {
-            Ok(_) => actions.set_operation_success(format!("{label} 已复制")),
-            Err(_) => actions.set_operation_error(format!("{label} 复制失败")),
+            Ok(_) => actions_clone.set_operation_success(format!("{label_text} 已复制")),
+            Err(_) => actions_clone.set_operation_error(format!("{label_text} 复制失败")),
         }
     });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn copy_text_to_clipboard(actions: AppActions, label: &str, _content: String) {
+fn copy_text_to_clipboard(actions: AppActions, label: &str, target: &str, _content: String) {
+    actions.record_audit_event(AuditActionKind::Copy, label.to_string(), target.to_string());
     actions.set_operation_success(format!("{label} 已复制（模拟）"));
 }
