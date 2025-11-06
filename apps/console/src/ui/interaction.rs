@@ -17,8 +17,14 @@ use serde::Serialize;
 #[cfg(target_arch = "wasm32")]
 use serde_json::json;
 use soulseed_agi_core_models::{
-    AIId, AccessClass, ConversationScenario, DialogueEventType, HumanId, Subject, SubjectRef,
+    AIId, AccessClass, ConversationScenario, DialogueEventType, HumanId, IdError, Subject,
+    SubjectRef,
 };
+#[cfg(target_arch = "wasm32")]
+use std::any::Any;
+#[cfg(target_arch = "wasm32")]
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::{convert::TryFrom, str::FromStr};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
@@ -37,7 +43,7 @@ pub fn InteractionPanel() -> Element {
     let cycle_runner = use_cycle_runner();
 
     let mut message_input = use_signal(|| String::new());
-    let mut message_seq = use_signal(|| 1u64);
+    let message_seq = use_signal(|| 1u64);
     let scenario_select = use_signal(|| ConversationScenario::HumanToAi);
     let event_type_select = use_signal(|| DialogueEventType::Message);
     let subject_role = use_signal(|| SubjectRole::Human);
@@ -122,7 +128,7 @@ pub fn InteractionPanel() -> Element {
         });
     }
 
-    let on_submit_message = {
+    let mut submit_message = {
         let actions = actions.clone();
         let runner = cycle_runner.clone();
         let scenario_select = scenario_select.clone();
@@ -134,94 +140,145 @@ pub fn InteractionPanel() -> Element {
         let participant_label = participant_label.clone();
         let channel_input = channel_input.clone();
         let access_class = access_class.clone();
-        move |evt: FormEvent| {
-            evt.prevent_default();
-            let text = message_input.read().trim().to_string();
-            if text.is_empty() {
-                actions.set_operation_error("请输入对话内容".to_string());
-                return;
-            }
-
-            let event_type = event_type_select.read().clone();
-            if event_type != DialogueEventType::Message {
-                actions.set_operation_error("目前仅支持提交消息类型事件".to_string());
-                return;
-            }
-
-            let seq = *message_seq.read();
-            let scenario = scenario_select.read().clone();
-            let access = *access_class.read();
-
-            let subject = match build_subject(*subject_role.read(), &subject_id.read()) {
-                Ok(subject) => subject,
-                Err(err) => {
-                    actions.set_operation_error(err);
+        let mut message_seq = message_seq.clone();
+        let mut message_input = message_input.clone();
+        move || {
+            let mut core = || {
+                // Clone the value immediately to avoid holding a borrow
+                let is_running = runner.is_running.read().clone();
+                if is_running {
                     return;
                 }
-            };
 
-            let participant = match build_subject(*participant_role.read(), &participant_id.read())
-            {
-                Ok(subject) => SubjectRef {
-                    kind: subject,
-                    role: match participant_label.read().trim() {
-                        "" => None,
-                        value => Some(value.to_string()),
+                let text = message_input.with(|value| value.trim().to_string());
+                if text.is_empty() {
+                    actions.set_operation_error("请输入对话内容".to_string());
+                    return;
+                }
+
+                let event_type = event_type_select.with(|value| value.clone());
+                if event_type != DialogueEventType::Message {
+                    actions.set_operation_error("目前仅支持提交消息类型事件".to_string());
+                    return;
+                }
+
+                let seq = message_seq.with(|value| *value);
+                let scenario = scenario_select.with(|value| value.clone());
+                let access = access_class.with(|value| *value);
+
+                let subject_role_value = subject_role.with(|value| *value);
+                let subject_id_value = subject_id.with(|value| value.clone());
+                let subject = match build_subject(subject_role_value, &subject_id_value) {
+                    Ok(subject) => subject,
+                    Err(err) => {
+                        actions.set_operation_error(err);
+                        return;
+                    }
+                };
+
+                let participant_role_value = participant_role.with(|value| *value);
+                let participant_id_value = participant_id.with(|value| value.clone());
+                let participant = match build_subject(participant_role_value, &participant_id_value)
+                {
+                    Ok(subject) => {
+                        let label_value = participant_label.with(|value| value.trim().to_string());
+                        SubjectRef {
+                            kind: subject,
+                            role: if label_value.is_empty() {
+                                None
+                            } else {
+                                Some(label_value)
+                            },
+                        }
+                    }
+                    Err(err) => {
+                        actions.set_operation_error(err);
+                        return;
+                    }
+                };
+
+                let channel_value = channel_input.with(|value| value.trim().to_string());
+
+                // Update UI state first
+                message_seq.with_mut(|value| *value += 1);
+                message_input.set(String::new());
+
+                // Prepare params for async execution
+                let params = CycleTriggerParams {
+                    scenario,
+                    subject,
+                    participants: vec![participant],
+                    text: text.clone(),
+                    sequence_number: seq,
+                    channel: if channel_value.is_empty() {
+                        None
+                    } else {
+                        Some(channel_value)
                     },
-                },
-                Err(err) => {
-                    actions.set_operation_error(err);
-                    return;
+                    access_class: access,
+                };
+
+                // Defer trigger_cycle to avoid borrow conflicts
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let runner_clone = runner.clone();
+                    spawn_local(async move {
+                        runner_clone.trigger_cycle(params);
+                    });
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    runner.trigger_cycle(params);
                 }
             };
 
-            runner.trigger_cycle(CycleTriggerParams {
-                scenario,
-                subject,
-                participants: vec![participant],
-                text: text.clone(),
-                sequence_number: seq,
-                channel: match channel_input.read().trim() {
-                    "" => None,
-                    value => Some(value.to_string()),
-                },
-                access_class: access,
-            });
+            #[cfg(target_arch = "wasm32")]
+            {
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| core())) {
+                    let message =
+                        format!("提交对话时发生内部错误: {}", format_panic_payload(payload));
+                    actions.set_operation_error(message);
+                    actions.set_operation_context(Some("触发觉知周期".into()));
+                }
+            }
 
-            message_seq.set(seq + 1);
-            message_input.set(String::new());
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                core();
+            }
         }
     };
 
     #[cfg(target_arch = "wasm32")]
-    let on_submit_injection = {
+    let mut submit_injection = {
         let actions = actions.clone();
-        let app_state = state.clone();
         let injection_input = injection_input.clone();
         let injection_cycle = injection_cycle.clone();
         let injection_priority = injection_priority.clone();
         let injection_author_role = injection_author_role.clone();
         let mut injection_pending = injection_pending.clone();
         let injection_seq = injection_seq.clone();
-        move |evt: FormEvent| {
-            evt.prevent_default();
-            let note = injection_input.read().trim().to_string();
+        move || {
+            if *injection_pending.read() {
+                return;
+            }
+
+            let note = injection_input.with(|value| value.trim().to_string());
             if note.is_empty() {
                 actions.set_operation_error("请输入注入说明".to_string());
                 return;
             }
 
-            let selected_cycle = injection_cycle.read();
-            let Some(cycle_label) = selected_cycle.clone() else {
-                actions.set_operation_error("请选择目标周期".to_string());
-                return;
+            let cycle_label = match injection_cycle.with(|value| value.clone()) {
+                Some(value) if !value.trim().is_empty() => value,
+                _ => {
+                    actions.set_operation_error("请选择目标周期".to_string());
+                    return;
+                }
             };
-            if cycle_label.trim().is_empty() {
-                actions.set_operation_error("请选择目标周期".to_string());
-                return;
-            }
 
-            let cycle_id = match cycle_label.parse::<u64>() {
+            let cycle_id = match cycle_label.trim().parse::<u64>() {
                 Ok(value) => value,
                 Err(_) => {
                     actions.set_operation_error("当前周期 ID 无法解析，请确认选择".to_string());
@@ -229,9 +286,9 @@ pub fn InteractionPanel() -> Element {
                 }
             };
 
-            let priority_value = injection_priority.read().clone();
-            let author_role_value = injection_author_role.read().clone();
-            let seq = *injection_seq.read();
+            let priority_value = injection_priority.with(|value| value.clone());
+            let author_role_value = injection_author_role.with(|value| value.clone());
+            let seq = injection_seq.with(|value| *value);
             let context_label = format!("HITL 注入 @ 周期 {cycle_label}");
 
             actions.set_operation_context(Some(context_label.clone()));
@@ -243,7 +300,7 @@ pub fn InteractionPanel() -> Element {
             injection_pending.set(true);
 
             let actions_clone = actions.clone();
-            let app_state_clone = app_state.clone();
+            let app_state_clone = state.clone();
             let mut injection_input_signal = injection_input.clone();
             let mut injection_seq_signal = injection_seq.clone();
             let mut injection_pending_signal = injection_pending.clone();
@@ -313,6 +370,13 @@ pub fn InteractionPanel() -> Element {
                 {
                     Ok(env) => {
                         actions_clone.set_operation_trace(env.trace_id.clone());
+                        actions_clone.operation_stage_complete(
+                            OperationStageKind::HitlSubmit,
+                            Some(format!(
+                                "角色 {author_for_async} · 优先级 {priority_for_async}"
+                            )),
+                        );
+
                         if let Some(snapshot) = env.data {
                             let outbox = snapshot.outbox.clone();
                             let outcome = snapshot.outcomes.last().cloned();
@@ -320,12 +384,6 @@ pub fn InteractionPanel() -> Element {
                                 cycle_label_for_async.clone(),
                                 snapshot,
                                 outbox,
-                            );
-                            actions_clone.operation_stage_complete(
-                                OperationStageKind::HitlSubmit,
-                                Some(format!(
-                                    "角色 {author_for_async} · 优先级 {priority_for_async}"
-                                )),
                             );
                             actions_clone.set_operation_diagnostics(Vec::new(), None);
                             actions_clone.set_operation_outcome(outcome);
@@ -388,10 +446,9 @@ pub fn InteractionPanel() -> Element {
     };
 
     #[cfg(not(target_arch = "wasm32"))]
-    let on_submit_injection = {
+    let submit_injection = {
         let actions = actions.clone();
-        move |evt: FormEvent| {
-            evt.prevent_default();
+        move || {
             actions.set_operation_error("当前运行环境不支持 HITL 注入提交".to_string());
             actions.set_operation_context(Some("HITL 注入".into()));
         }
@@ -422,8 +479,7 @@ pub fn InteractionPanel() -> Element {
             }
 
             div { class: "grid gap-4 md:grid-cols-2",
-                form { class: "space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
-                    onsubmit: on_submit_message,
+                div { class: "space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
                     h3 { class: "text-sm font-semibold text-slate-800", "写入对话事件" }
                     div { class: "grid grid-cols-2 gap-2 text-xs text-slate-600",
                         label { class: "space-y-1",
@@ -554,14 +610,14 @@ pub fn InteractionPanel() -> Element {
                     }
                     button {
                         class: "rounded bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800",
-                        r#type: "submit",
+                        r#type: "button",
+                        onclick: move |_| submit_message(),
                         disabled: runner_is_running,
                         if runner_is_running { "提交中…" } else { "提交对话" }
                     }
                 }
 
-                form { class: "space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
-                    onsubmit: on_submit_injection,
+                div { class: "space-y-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
                     h3 { class: "text-sm font-semibold text-slate-800", "提交 HITL 注入" }
                     div { class: "space-y-2 text-xs text-slate-600",
                         label { class: "space-y-1",
@@ -637,7 +693,8 @@ pub fn InteractionPanel() -> Element {
                     }
                     button {
                         class: "rounded bg-amber-500 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-70",
-                        r#type: "submit",
+                        r#type: "button",
+                        onclick: move |_| submit_injection(),
                         disabled: disable_injection,
                         if injection_busy { "提交中…" } else { "提交注入" }
                     }
@@ -1049,7 +1106,7 @@ fn humanize_duration(duration_ms: u64) -> String {
         format!("{duration_ms} ms")
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SubjectRole {
     Human,
     AI,
@@ -1241,11 +1298,39 @@ fn build_subject(role: SubjectRole, id_raw: &str) -> Result<Subject, String> {
     if trimmed.is_empty() {
         return Err("请填写 ID".into());
     }
-    let parsed = trimmed
-        .parse::<u64>()
-        .map_err(|_| "ID 必须为正整数".to_string())?;
+
+    fn parse_id<T>(value: &str) -> Result<T, IdError>
+    where
+        T: TryFrom<u64, Error = IdError> + FromStr<Err = IdError>,
+    {
+        if let Ok(number) = value.parse::<u64>() {
+            if let Ok(id) = T::try_from(number) {
+                return Ok(id);
+            }
+        }
+        value.parse::<T>()
+    }
+
+    let err_message =
+        "ID 格式不合法，请输入合法的 Soulseed ID（支持 10 进制数值或 base36 字符串）".to_string();
+
     match role {
-        SubjectRole::Human => Ok(Subject::Human(HumanId::new(parsed))),
-        SubjectRole::AI => Ok(Subject::AI(AIId::new(parsed))),
+        SubjectRole::Human => parse_id::<HumanId>(trimmed)
+            .map(Subject::Human)
+            .map_err(|_| err_message.clone()),
+        SubjectRole::AI => parse_id::<AIId>(trimmed)
+            .map(Subject::AI)
+            .map_err(|_| err_message),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn format_panic_payload(payload: Box<dyn Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(msg) => *msg,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(msg) => (*msg).to_string(),
+            Err(_) => "未知 panic".into(),
+        },
     }
 }

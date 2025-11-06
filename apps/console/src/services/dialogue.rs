@@ -8,6 +8,7 @@ use soulseed_agi_core_models::{
 };
 use thiserror::Error;
 use time::OffsetDateTime;
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -51,8 +52,8 @@ pub fn build_message_event(
         return Err(DialogueBuildError::InvalidSequence);
     }
 
-    let event_id = EventId::generate();
-    let message_id = MessageId::generate();
+    let event_id = generate_event_id();
+    let message_id = generate_message_id();
     let now = OffsetDateTime::now_utc();
     let timestamp_ms = draft
         .timestamp_override_ms
@@ -138,6 +139,37 @@ pub fn build_message_event(
         self_reflection: None,
         metadata,
     })
+}
+
+fn fallback_raw_id() -> u64 {
+    let now = OffsetDateTime::now_utc().unix_timestamp_nanos();
+    let mixed = now.abs() as u128 ^ (now.abs() as u128 >> 32);
+    let candidate = (mixed as u64).wrapping_add(1);
+    if candidate == 0 {
+        1
+    } else {
+        candidate
+    }
+}
+
+fn generate_event_id() -> EventId {
+    match EventId::try_generate() {
+        Ok(id) => id,
+        Err(err) => {
+            warn!(?err, "EventId::try_generate failed, using fallback");
+            EventId::from_raw_unchecked(fallback_raw_id())
+        }
+    }
+}
+
+fn generate_message_id() -> MessageId {
+    match MessageId::try_generate() {
+        Ok(id) => id,
+        Err(err) => {
+            warn!(?err, "MessageId::try_generate failed, using fallback");
+            MessageId::from_raw_unchecked(fallback_raw_id())
+        }
+    }
 }
 
 fn parse_tenant_id(raw: &str) -> Result<TenantId, DialogueBuildError> {

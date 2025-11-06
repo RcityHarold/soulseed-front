@@ -19,6 +19,11 @@ use crate::APP_CONFIG;
 use wasm_bindgen::JsValue;
 
 #[cfg(target_arch = "wasm32")]
+use futures::FutureExt;
+
+#[cfg(target_arch = "wasm32")]
+use std::{any::Any, panic::AssertUnwindSafe};
+#[cfg(target_arch = "wasm32")]
 use {
     crate::services::sse::{SseCallbacks, SseClient, SseConnectOptions, SseHandle, SseMessage},
     tracing::warn,
@@ -159,84 +164,110 @@ fn trigger_cycle_impl(
         let session_label = session_id.clone();
         let stream_endpoint = config.stream_endpoint();
         let actions = actions.clone();
-        let mut is_running = is_running.clone();
+        let is_running = is_running.clone();
         let stream_handle = stream_handle.clone();
-        let app_state_clone = app_state.clone();
+
+        let actions_async = actions.clone();
+        let actions_recover = actions.clone();
+        let mut is_running_async = is_running.clone();
+        let is_running_recover = is_running.clone();
+        let stream_handle_async = stream_handle.clone();
+        let stream_handle_recover = stream_handle.clone();
+        let app_state_async = app_state.clone();
+        let thin_event_async = thin_event.clone();
+        let stream_endpoint_async = stream_endpoint.clone();
+        let tenant_for_context = tenant_id.clone();
+        let session_for_context = session_label.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            is_running.set(true);
-            actions.operation_stage_start(OperationStageKind::TriggerSubmit, "提交触发请求");
-            let triggered_at = iso_timestamp_now();
-            actions.set_operation_triggered(Some(triggered_at));
-            actions.set_operation_trace(None);
-            actions.set_operation_cycle(None);
-            actions.set_operation_outcome(None);
-            actions.set_operation_success("已提交觉知周期触发请求，等待响应".into());
-            actions
-                .set_operation_context(Some(format!("触发觉知周期 @ {tenant_id}/{session_label}")));
+            let fut = async move {
+                is_running_async.set(true);
+                actions_async
+                    .operation_stage_start(OperationStageKind::TriggerSubmit, "提交触发请求");
+                let triggered_at = iso_timestamp_now();
+                actions_async.set_operation_triggered(Some(triggered_at));
+                actions_async.set_operation_trace(None);
+                actions_async.set_operation_cycle(None);
+                actions_async.set_operation_outcome(None);
+                actions_async.set_operation_success("已提交觉知周期触发请求，等待响应".into());
+                actions_async.set_operation_context(Some(format!(
+                    "触发觉知周期 @ {tenant_for_context}/{session_for_context}"
+                )));
 
-            let Some(client) = API_CLIENT.get().cloned() else {
-                actions.set_operation_error("Thin-Waist 客户端未初始化".into());
-                actions.set_operation_context(Some("触发觉知周期".into()));
-                is_running.set(false);
-                return;
+                let Some(client) = API_CLIENT.get().cloned() else {
+                    actions_async.set_operation_error("Thin-Waist 客户端未初始化".into());
+                    actions_async.set_operation_context(Some("触发觉知周期".into()));
+                    is_running_async.set(false);
+                    return;
+                };
+
+                match client
+                    .post_trigger_dialogue::<_, CycleTriggerResponse>(
+                        &thin_event_async,
+                        Some(tenant_for_context.as_str()),
+                    )
+                    .await
+                {
+                    Ok(env) => {
+                        actions_async.set_operation_trace(env.trace_id.clone());
+                        let Some(data) = env.data else {
+                            actions_async.set_operation_error("触发接口返回空数据".into());
+                            actions_async.set_operation_context(Some("触发觉知周期".into()));
+                            is_running_async.set(false);
+                            return;
+                        };
+                        actions_async.operation_stage_complete(
+                            OperationStageKind::TriggerSubmit,
+                            Some(format!("状态 {}", data.status)),
+                        );
+                        actions_async.set_operation_diagnostics(Vec::new(), None);
+                        let cycle_id = data.cycle_id;
+                        let cycle_id_label = cycle_id.to_string();
+                        actions_async.operation_stage_start(
+                            OperationStageKind::StreamAwait,
+                            format!("等待周期 #{cycle_id_label}"),
+                        );
+                        actions_async.set_operation_cycle(Some(cycle_id_label.clone()));
+                        actions_async.set_operation_success(format!(
+                            "周期 {cycle_id_label} 已触发，状态 {}",
+                            data.status
+                        ));
+                        actions_async
+                            .set_operation_context(Some(format!("觉知周期 #{cycle_id_label}")));
+                        actions_async.select_ace_cycle(Some(cycle_id_label.clone()));
+
+                        start_cycle_stream(
+                            cycle_id,
+                            cycle_id_label,
+                            stream_endpoint_async,
+                            actions_async.clone(),
+                            is_running_async.clone(),
+                            stream_handle_async.clone(),
+                            app_state_async.clone(),
+                        );
+                    }
+                    Err(err) => {
+                        record_client_error(
+                            &actions_async,
+                            &err,
+                            "post_trigger_dialogue",
+                            "触发觉知周期失败",
+                            Some(OperationStageKind::TriggerSubmit),
+                        );
+                        actions_async.set_operation_cycle(None);
+                        is_running_async.set(false);
+                    }
+                }
             };
 
-            match client
-                .post_trigger_dialogue::<_, CycleTriggerResponse>(
-                    &thin_event,
-                    Some(tenant_id.as_str()),
-                )
-                .await
-            {
-                Ok(env) => {
-                    actions.set_operation_trace(env.trace_id.clone());
-                    let Some(data) = env.data else {
-                        actions.set_operation_error("触发接口返回空数据".into());
-                        actions.set_operation_context(Some("触发觉知周期".into()));
-                        is_running.set(false);
-                        return;
-                    };
-                    actions.operation_stage_complete(
-                        OperationStageKind::TriggerSubmit,
-                        Some(format!("状态 {}", data.status)),
-                    );
-                    actions.set_operation_diagnostics(Vec::new(), None);
-                    let cycle_id = data.cycle_id;
-                    let cycle_id_label = cycle_id.to_string();
-                    actions.operation_stage_start(
-                        OperationStageKind::StreamAwait,
-                        format!("等待周期 #{cycle_id_label}"),
-                    );
-                    actions.set_operation_cycle(Some(cycle_id_label.clone()));
-                    actions.set_operation_success(format!(
-                        "周期 {cycle_id_label} 已触发，状态 {}",
-                        data.status
-                    ));
-                    actions.set_operation_context(Some(format!("觉知周期 #{cycle_id_label}")));
-                    actions.select_ace_cycle(Some(cycle_id_label.clone()));
-
-                    start_cycle_stream(
-                        cycle_id,
-                        cycle_id_label,
-                        stream_endpoint,
-                        actions.clone(),
-                        is_running.clone(),
-                        stream_handle.clone(),
-                        app_state_clone.clone(),
-                    );
-                }
-                Err(err) => {
-                    record_client_error(
-                        &actions,
-                        &err,
-                        "post_trigger_dialogue",
-                        "触发觉知周期失败",
-                        Some(OperationStageKind::TriggerSubmit),
-                    );
-                    actions.set_operation_cycle(None);
-                    is_running.set(false);
-                }
+            if let Err(panic) = AssertUnwindSafe(fut).catch_unwind().await {
+                handle_async_panic(
+                    actions_recover.clone(),
+                    is_running_recover.clone(),
+                    stream_handle_recover.clone(),
+                    "触发觉知周期",
+                    panic,
+                );
             }
         });
     }
@@ -342,11 +373,28 @@ fn handle_cycle_stream_message(
                 handle.close();
             }
             let actions_refresh = actions.clone();
+            let actions_refresh_on_panic = actions.clone();
             let app_state_clone = app_state.clone();
             let cycle_label_string = cycle_label.to_string();
+            let status_for_refresh = status.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                refresh_after_cycle(actions_refresh, app_state_clone, cycle_label_string, status)
+                let fut = async move {
+                    refresh_after_cycle(
+                        actions_refresh,
+                        app_state_clone,
+                        cycle_label_string,
+                        status_for_refresh,
+                    )
                     .await;
+                };
+
+                if let Err(panic) = AssertUnwindSafe(fut).catch_unwind().await {
+                    let message = format!("刷新周期数据时发生错误: {}", format_panic_payload(panic));
+                    let actions_error = actions_refresh_on_panic.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        actions_error.set_operation_error(message);
+                    });
+                }
             });
         }
         Some("timeout") => {
@@ -366,6 +414,41 @@ fn handle_cycle_stream_message(
         None => {
             actions.set_operation_success(format!("周期 {cycle_label} 事件: {}", message.data));
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn handle_async_panic(
+    actions: AppActions,
+    is_running: Signal<bool>,
+    stream_handle: Signal<Option<SseHandle>>,
+    context: &str,
+    panic: Box<dyn Any + Send>,
+) {
+    let panic_detail = format_panic_payload(panic);
+    let context_label = context.to_string();
+    let message = format!("{context_label}内部错误: {panic_detail}");
+    let actions_clone = actions.clone();
+    let mut is_running_signal = is_running.clone();
+    let mut stream_signal = stream_handle.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        actions_clone.set_operation_error(message);
+        actions_clone.set_operation_context(Some(context_label));
+        is_running_signal.set(false);
+        if let Some(handle) = stream_signal.write().take() {
+            handle.close();
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn format_panic_payload(payload: Box<dyn Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(msg) => *msg,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(msg) => (*msg).to_string(),
+            Err(_) => "未知 panic".into(),
+        },
     }
 }
 

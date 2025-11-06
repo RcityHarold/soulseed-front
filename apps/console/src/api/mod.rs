@@ -20,14 +20,14 @@ pub struct ThinWaistClient {
 #[allow(dead_code)]
 impl ThinWaistClient {
     pub fn new(config: AppConfig) -> ClientResult<Self> {
-        let timeout = config.request_timeout;
         let base_url = normalize_base_url(&config.api_base_url);
 
-        let mut builder = reqwest::Client::builder();
+        #[cfg(target_arch = "wasm32")]
+        let builder = reqwest::Client::builder();
+
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            builder = builder.timeout(timeout);
-        }
+        let builder = reqwest::Client::builder().timeout(config.request_timeout);
+
         let client = builder.build().map_err(ClientError::from)?;
 
         Ok(Self {

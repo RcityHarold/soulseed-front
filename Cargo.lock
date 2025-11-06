@@ -1983,6 +1983,7 @@ dependencies = [
 name = "soulseed-agi-core-models"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "semver",
  "serde",
  "serde_json",
@@ -2102,6 +2103,7 @@ checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
  "itoa",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde",
