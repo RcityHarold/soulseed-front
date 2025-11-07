@@ -155,7 +155,7 @@ impl ThinWaistClient {
         &self,
         payload: &TReq,
         tenant_override: Option<&str>,
-    ) -> ClientResult<ApiEnvelope<TRes>>
+    ) -> ClientResult<TRes>
     where
         TReq: Serialize + ?Sized,
         TRes: DeserializeOwned,
@@ -163,40 +163,40 @@ impl ThinWaistClient {
         let builder = self
             .request(Method::POST, "triggers/dialogue", tenant_override)?
             .json(payload);
-        self.send(builder).await
+        self.send_plain(builder).await
     }
 
     pub async fn get_cycle_snapshot<TRes>(
         &self,
         cycle_id: &str,
         tenant_override: Option<&str>,
-    ) -> ClientResult<ApiEnvelope<TRes>>
+    ) -> ClientResult<TRes>
     where
         TRes: DeserializeOwned,
     {
         let path = format!("ace/cycles/{cycle_id}");
         let builder = self.request(Method::GET, &path, tenant_override)?;
-        self.send(builder).await
+        self.send_plain(builder).await
     }
 
     pub async fn get_cycle_outbox<TRes>(
         &self,
         cycle_id: &str,
         tenant_override: Option<&str>,
-    ) -> ClientResult<ApiEnvelope<TRes>>
+    ) -> ClientResult<TRes>
     where
         TRes: DeserializeOwned,
     {
         let path = format!("ace/cycles/{cycle_id}/outbox");
         let builder = self.request(Method::GET, &path, tenant_override)?;
-        self.send(builder).await
+        self.send_plain(builder).await
     }
 
     pub async fn post_cycle_injection<TReq, TRes>(
         &self,
         payload: &TReq,
         tenant_override: Option<&str>,
-    ) -> ClientResult<ApiEnvelope<TRes>>
+    ) -> ClientResult<TRes>
     where
         TReq: Serialize + ?Sized,
         TRes: DeserializeOwned,
@@ -204,7 +204,7 @@ impl ThinWaistClient {
         let builder = self
             .request(Method::POST, "ace/injections", tenant_override)?
             .json(payload);
-        self.send(builder).await
+        self.send_plain(builder).await
     }
 
     pub async fn get_awareness_events<TQuery, TRes>(
@@ -286,6 +286,25 @@ impl ThinWaistClient {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
 
+    async fn send_plain<T>(&self, builder: reqwest::RequestBuilder) -> ClientResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        let response = builder.send().await.map_err(ClientError::from)?;
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(ClientError::from)?;
+
+        if bytes.is_empty() {
+            return Err(ClientError::EmptyResponse(status));
+        }
+
+        if status.is_success() {
+            serde_json::from_slice(&bytes).map_err(ClientError::from)
+        } else {
+            Err(map_plain_error(status, &bytes))
+        }
+    }
+
     async fn send<T>(&self, builder: reqwest::RequestBuilder) -> ClientResult<ApiEnvelope<T>>
     where
         T: DeserializeOwned,
@@ -315,6 +334,31 @@ impl ThinWaistClient {
 
 fn normalize_base_url(input: &str) -> String {
     input.trim_end_matches('/').to_string()
+}
+
+#[derive(Deserialize)]
+struct PlainAceError {
+    error: String,
+}
+
+fn map_plain_error(status: StatusCode, bytes: &[u8]) -> ClientError {
+    if let Ok(body) = serde_json::from_slice::<ApiErrorBody>(bytes) {
+        return ClientError::Api(body.with_status(status));
+    }
+
+    if let Ok(wrapper) = serde_json::from_slice::<PlainAceError>(bytes) {
+        return ClientError::Api(ApiErrorBody {
+            code: "ace_error".into(),
+            message: wrapper.error,
+            details: None,
+            status: Some(status),
+        });
+    }
+
+    ClientError::UnexpectedStatus {
+        status,
+        body: bytes.to_vec(),
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

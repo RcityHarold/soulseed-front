@@ -368,8 +368,8 @@ pub fn InteractionPanel() -> Element {
                     )
                     .await
                 {
-                    Ok(env) => {
-                        actions_clone.set_operation_trace(env.trace_id.clone());
+                    Ok(snapshot) => {
+                        actions_clone.set_operation_trace(None);
                         actions_clone.operation_stage_complete(
                             OperationStageKind::HitlSubmit,
                             Some(format!(
@@ -377,32 +377,23 @@ pub fn InteractionPanel() -> Element {
                             )),
                         );
 
-                        if let Some(snapshot) = env.data {
-                            let outbox = snapshot.outbox.clone();
-                            let outcome = snapshot.outcomes.last().cloned();
-                            actions_clone.store_ace_snapshot(
-                                cycle_label_for_async.clone(),
-                                snapshot,
-                                outbox,
-                            );
-                            actions_clone.set_operation_diagnostics(Vec::new(), None);
-                            actions_clone.set_operation_outcome(outcome);
-                            actions_clone.set_operation_success(format!(
-                                "周期 {cycle_label_for_async} 已接收 HITL 注入（优先级 {priority_for_async}）"
-                            ));
-                            actions_clone.set_operation_cycle(Some(cycle_label_for_async.clone()));
-                            actions_clone.select_ace_cycle(Some(cycle_label_for_async.clone()));
-                            actions_clone.set_operation_context(Some(context_for_async.clone()));
-                            injection_seq_signal.set(seq + 1);
-                            injection_input_signal.set(String::new());
-                        } else {
-                            actions_clone.operation_stage_fail(
-                                OperationStageKind::HitlSubmit,
-                                Some("HITL 注入返回空快照".into()),
-                            );
-                            actions_clone.set_operation_error("HITL 注入返回空快照".into());
-                            actions_clone.set_operation_context(Some(context_for_async.clone()));
-                        }
+                        let outbox = snapshot.outbox.clone();
+                        let outcome = snapshot.outcomes.last().cloned();
+                        actions_clone.store_ace_snapshot(
+                            cycle_label_for_async.clone(),
+                            snapshot,
+                            outbox,
+                        );
+                        actions_clone.set_operation_diagnostics(Vec::new(), None);
+                        actions_clone.set_operation_outcome(outcome);
+                        actions_clone.set_operation_success(format!(
+                            "周期 {cycle_label_for_async} 已接收 HITL 注入（优先级 {priority_for_async}）"
+                        ));
+                        actions_clone.set_operation_cycle(Some(cycle_label_for_async.clone()));
+                        actions_clone.select_ace_cycle(Some(cycle_label_for_async.clone()));
+                        actions_clone.set_operation_context(Some(context_for_async.clone()));
+                        injection_seq_signal.set(seq + 1);
+                        injection_input_signal.set(String::new());
                     }
                     Err(err) => {
                         actions_clone.operation_stage_fail(

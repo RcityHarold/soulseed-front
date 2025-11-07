@@ -208,14 +208,8 @@ fn trigger_cycle_impl(
                     )
                     .await
                 {
-                    Ok(env) => {
-                        actions_async.set_operation_trace(env.trace_id.clone());
-                        let Some(data) = env.data else {
-                            actions_async.set_operation_error("触发接口返回空数据".into());
-                            actions_async.set_operation_context(Some("触发觉知周期".into()));
-                            is_running_async.set(false);
-                            return;
-                        };
+                    Ok(data) => {
+                        actions_async.set_operation_trace(None);
                         actions_async.operation_stage_complete(
                             OperationStageKind::TriggerSubmit,
                             Some(format!("状态 {}", data.status)),
@@ -322,6 +316,10 @@ fn start_cycle_stream(
     let mut stream_handle_error = stream_handle.clone();
     let error_cycle_id = cycle_id_label.clone();
     let on_error = move |err: String| {
+        if !is_running_error() {
+            return;
+        }
+
         actions_on_error.operation_stage_fail(OperationStageKind::StreamAwait, Some(err.clone()));
         actions_on_error.set_operation_error(format!("周期 {error_cycle_id} 流错误: {err}"));
         is_running_error.set(false);
@@ -389,7 +387,8 @@ fn handle_cycle_stream_message(
                 };
 
                 if let Err(panic) = AssertUnwindSafe(fut).catch_unwind().await {
-                    let message = format!("刷新周期数据时发生错误: {}", format_panic_payload(panic));
+                    let message =
+                        format!("刷新周期数据时发生错误: {}", format_panic_payload(panic));
                     let actions_error = actions_refresh_on_panic.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         actions_error.set_operation_error(message);
@@ -769,22 +768,15 @@ async fn refresh_after_cycle(
         .await;
 
     match (snapshot_res, outbox_res) {
-        (Ok(snapshot_env), Ok(outbox_env)) => {
-            if let Some(snapshot) = snapshot_env.data {
-                let outbox = outbox_env.data.unwrap_or_default();
-                let outbox_count = outbox.len();
-                let outcome = snapshot.outcomes.last().cloned();
-                actions.store_ace_snapshot(cycle_label.clone(), snapshot, outbox);
-                actions.operation_stage_complete(
-                    OperationStageKind::OutboxReady,
-                    Some(format!("Outbox {} 条", outbox_count)),
-                );
-                actions.set_operation_outcome(outcome);
-            } else {
-                actions.set_ace_snapshot_error(Some("周期快照为空".into()));
-                actions.set_operation_outcome(None);
-                refresh_ok = false;
-            }
+        (Ok(snapshot), Ok(outbox)) => {
+            let outbox_count = outbox.len();
+            let outcome = snapshot.outcomes.last().cloned();
+            actions.store_ace_snapshot(cycle_label.clone(), snapshot, outbox);
+            actions.operation_stage_complete(
+                OperationStageKind::OutboxReady,
+                Some(format!("Outbox {} 条", outbox_count)),
+            );
+            actions.set_operation_outcome(outcome);
         }
         (snapshot, outbox) => {
             let mut message = String::new();
@@ -827,6 +819,8 @@ async fn refresh_after_cycle(
             refresh_ok = false;
         }
     }
+
+    actions.set_ace_snapshot_loading(false);
 
     if refresh_ok {
         actions.operation_stage_complete(
