@@ -107,7 +107,7 @@ pub struct AceCycleSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CycleOutcomeSummary {
-    pub cycle_id: u64,
+    pub cycle_id: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_digest: Option<String>,
@@ -115,7 +115,7 @@ pub struct CycleOutcomeSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CycleTriggerResponse {
-    pub cycle_id: u64,
+    pub cycle_id: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_digest: Option<String>,
@@ -123,7 +123,7 @@ pub struct CycleTriggerResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CycleScheduleView {
-    pub cycle_id: u64,
+    pub cycle_id: String,
     pub lane: String,
     pub anchor: AwarenessAnchor,
     pub budget: BudgetSnapshotView,
@@ -136,7 +136,7 @@ pub struct CycleScheduleView {
     pub router_decision: Option<RouterDecisionView>,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_cycle_id: Option<u64>,
+    pub parent_cycle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collab_scope_id: Option<String>,
 }
@@ -166,18 +166,20 @@ impl From<&BudgetSnapshotView> for AceBudget {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncPointInputView {
-    pub cycle_id: u64,
+    pub cycle_id: String,
     pub kind: SyncPointKind,
     pub anchor: AwarenessAnchor,
     pub events: Vec<DialogueEvent>,
     pub budget: BudgetSnapshotView,
-    pub timeframe: (String, String),
+    // timeframe 在后端是 (OffsetDateTime, OffsetDateTime)，序列化为嵌套数组
+    // 使用 Value 类型来接收任意 JSON 格式
+    pub timeframe: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_injections: Vec<HitlInjectionView>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub context_manifest: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_cycle_id: Option<u64>,
+    pub parent_cycle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collab_scope_id: Option<String>,
 }
@@ -197,8 +199,8 @@ pub struct HitlInjectionView {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OutboxMessageView {
-    pub cycle_id: u64,
-    pub event_id: u64,
+    pub cycle_id: String,
+    pub event_id: String,
     pub payload: AwarenessEvent,
 }
 
@@ -224,7 +226,7 @@ pub struct RouterDecisionView {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoutePlanView {
-    pub cycle_id: u64,
+    pub cycle_id: String,
     pub anchor: AwarenessAnchor,
     pub fork: AwarenessFork,
     pub decision_plan: DecisionPlan,

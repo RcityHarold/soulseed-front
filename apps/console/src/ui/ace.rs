@@ -1036,6 +1036,9 @@ struct OutboxRow {
 }
 
 fn build_outbox_rows(outbox: &[OutboxMessageView]) -> Vec<OutboxRow> {
+    use soulseed_agi_core_models::AwarenessCycleId;
+    use std::str::FromStr;
+
     outbox
         .iter()
         .map(|item| {
@@ -1054,10 +1057,18 @@ fn build_outbox_rows(outbox: &[OutboxMessageView]) -> Vec<OutboxRow> {
                 .map(Rc::new);
             let event_json = serde_json::to_string_pretty(&event).ok().map(Rc::new);
 
+            // 将 Base36 字符串转换为 u64
+            let cycle_id = AwarenessCycleId::from_str(&item.cycle_id)
+                .map(|id| id.as_u64())
+                .unwrap_or_else(|_| {
+                    // 如果解析失败，尝试直接解析为 u64
+                    item.cycle_id.parse::<u64>().unwrap_or(0)
+                });
+
             OutboxRow {
                 event,
                 event_id,
-                cycle_id: item.cycle_id,
+                cycle_id,
                 occurred_at,
                 event_type_label,
                 degradation,

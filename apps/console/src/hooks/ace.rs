@@ -224,11 +224,23 @@ async fn load_cycle_snapshot(actions: AppActions, state: AppSignal) {
         }
     };
 
+    // 将 Base36 格式的 cycle_id 转换为 u64 字符串
+    use soulseed_agi_core_models::AwarenessCycleId;
+    use std::str::FromStr;
+
+    let cycle_id_u64 = match AwarenessCycleId::from_str(&selected) {
+        Ok(id) => id.as_u64().to_string(),
+        Err(_) => {
+            // 如果解析失败，可能已经是 u64 格式，直接使用
+            selected.clone()
+        }
+    };
+
     let snapshot_res = client
-        .get_cycle_snapshot::<CycleSnapshotView>(&selected, Some(&tenant))
+        .get_cycle_snapshot::<CycleSnapshotView>(&cycle_id_u64, Some(&tenant))
         .await;
     let outbox_res = client
-        .get_cycle_outbox::<Vec<OutboxMessageView>>(&selected, Some(&tenant))
+        .get_cycle_outbox::<Vec<OutboxMessageView>>(&cycle_id_u64, Some(&tenant))
         .await;
 
     match (snapshot_res, outbox_res) {

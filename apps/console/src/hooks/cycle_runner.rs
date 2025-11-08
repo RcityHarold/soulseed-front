@@ -215,8 +215,29 @@ fn trigger_cycle_impl(
                             Some(format!("状态 {}", data.status)),
                         );
                         actions_async.set_operation_diagnostics(Vec::new(), None);
-                        let cycle_id = data.cycle_id;
-                        let cycle_id_label = cycle_id.to_string();
+
+                        // 将 Base36 字符串转换为 u64
+                        use soulseed_agi_core_models::AwarenessCycleId;
+                        use std::str::FromStr;
+
+                        let cycle_id_label = data.cycle_id.clone();
+                        let cycle_id = match AwarenessCycleId::from_str(&data.cycle_id) {
+                            Ok(id) => id.as_u64(),
+                            Err(_) => {
+                                // 如果解析失败，可能已经是 u64 字符串
+                                match data.cycle_id.parse::<u64>() {
+                                    Ok(id) => id,
+                                    Err(_) => {
+                                        actions_async.set_operation_error(format!(
+                                            "无效的周期 ID: {}",
+                                            data.cycle_id
+                                        ));
+                                        is_running_async.set(false);
+                                        return;
+                                    }
+                                }
+                            }
+                        };
                         actions_async.operation_stage_start(
                             OperationStageKind::StreamAwait,
                             format!("等待周期 #{cycle_id_label}"),
