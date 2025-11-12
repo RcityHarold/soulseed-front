@@ -735,11 +735,16 @@ fn EventCard(props: EventCardProps) -> Element {
             if !tags.is_empty() {
                 div { class: "flex flex-wrap gap-2",
                     for tag in tags.iter().cloned() {
-                        EventTagPill {
-                            key: format!("event-{event_id}-tag-{tag}"),
-                            tag,
-                            event_id,
-                            actions: actions.clone(),
+                        {
+                            let tag_key = tag.clone();
+                            rsx! {
+                                EventTagPill {
+                                    key: format!("event-{event_id}-tag-{tag_key}"),
+                                    tag,
+                                    event_id,
+                                    actions: actions.clone(),
+                                }
+                            }
                         }
                     }
                 }

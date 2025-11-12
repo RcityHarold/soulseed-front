@@ -201,7 +201,7 @@ mod wasm {
             on_message.forget();
 
             // 监听常见的自定义事件
-            for event_name in ["dialogue_event", "awareness_event", "ping"] {
+            for event_name in ["dialogue_event", "awareness_event", "ping", "complete", "pending", "timeout"] {
                 let inner = Rc::clone(self);
                 let event_type = event_name.to_string();
                 let closure = Closure::wrap(Box::new(move |evt: MessageEvent| {

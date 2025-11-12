@@ -1,13 +1,15 @@
 use dioxus::prelude::*;
 use serde_json::Value;
+use std::collections::HashMap;
 use soulseed_agi_core_models::dialogue_event::DialogueEvent as ThinDialogueEvent;
 use soulseed_agi_core_models::{AccessClass, ConversationScenario, Subject, SubjectRef};
 
-use crate::api::ClientError;
+use crate::api::{AwarenessQuery, ClientError};
 #[cfg(target_arch = "wasm32")]
 use crate::models::CycleTriggerResponse;
 #[cfg(target_arch = "wasm32")]
 use crate::models::{
+    AceCycleStatus, AceCycleSummary, AceLane, AwarenessEvent, AwarenessEventType,
     ContextBundleView, CycleSnapshotView, ExplainIndices, OutboxMessageView, TimelinePayload,
 };
 use crate::services::dialogue::{build_message_event, MessageEventDraft};
@@ -336,17 +338,35 @@ fn start_cycle_stream(
     let mut is_running_error = is_running.clone();
     let mut stream_handle_error = stream_handle.clone();
     let error_cycle_id = cycle_id_label.clone();
+    let error_cycle_id_u64 = cycle_id;
+    let app_state_on_error = app_state.clone();
     let on_error = move |err: String| {
         if !is_running_error() {
             return;
         }
 
-        actions_on_error.operation_stage_fail(OperationStageKind::StreamAwait, Some(err.clone()));
-        actions_on_error.set_operation_error(format!("周期 {error_cycle_id} 流错误: {err}"));
-        is_running_error.set(false);
-        if let Some(handle) = stream_handle_error.write().take() {
-            handle.close();
-        }
+        // SSE连接断开，但不立即标记为失败
+        // 先查询周期的实际状态再决定
+        actions_on_error.set_operation_success(format!("{err}，正在验证周期状态..."));
+
+        // 异步查询周期状态
+        let actions_verify = actions_on_error.clone();
+        let mut is_running_verify = is_running_error.clone();
+        let mut stream_handle_verify = stream_handle_error.clone();
+        let verify_cycle_id = error_cycle_id.clone();
+        let verify_cycle_id_u64 = error_cycle_id_u64;
+        let app_state_verify = app_state_on_error.clone();
+
+        spawn(async move {
+            verify_cycle_after_sse_disconnect(
+                actions_verify,
+                &mut is_running_verify,
+                &mut stream_handle_verify,
+                verify_cycle_id_u64,
+                verify_cycle_id,
+                app_state_verify,
+            ).await;
+        });
     };
 
     let callbacks = SseCallbacks::new(on_open, on_message, on_error);
@@ -595,9 +615,20 @@ fn extract_schedule_status(payload: &str) -> Option<String> {
     serde_json::from_str::<Value>(payload)
         .ok()
         .and_then(|value| {
+            // 优先从 outcomes 数组的最后一个元素读取实际执行状态
+            // outcomes 包含周期实际执行结果，比 schedule.status 更准确
             value
-                .pointer("/schedule/status")
+                .pointer("/outcomes")
+                .and_then(|arr| arr.as_array())
+                .and_then(|arr| arr.last())
+                .and_then(|outcome| outcome.pointer("/status"))
                 .and_then(|v| v.as_str().map(|text| text.to_string()))
+                .or_else(|| {
+                    // 如果 outcomes 为空，fallback 到 schedule.status
+                    value
+                        .pointer("/schedule/status")
+                        .and_then(|v| v.as_str().map(|text| text.to_string()))
+                })
         })
 }
 
@@ -852,4 +883,281 @@ async fn refresh_after_cycle(
         actions.set_operation_cycle(Some(cycle_label.clone()));
         actions.set_operation_context(Some(format!("觉知周期 #{cycle_label}")));
     }
+
+    // 刷新 ACE 周期列表，以便显示新的 Finalized 事件
+    refresh_ace_cycles_list(actions, tenant).await;
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn refresh_ace_cycles_list(actions: AppActions, tenant: String) {
+    actions.set_ace_loading(true);
+    actions.set_ace_error(None);
+
+    let client = match API_CLIENT.get().cloned() {
+        Some(client) => client,
+        None => {
+            actions.set_ace_error(Some("Thin-Waist 客户端未初始化".into()));
+            actions.set_ace_loading(false);
+            return;
+        }
+    };
+
+    match client
+        .get_awareness_events::<_, Vec<AwarenessEvent>>(&tenant, &AwarenessQuery { limit: 200 })
+        .await
+    {
+        Ok(env) => {
+            if let Some(events) = env.data {
+                tracing::info!("refresh_ace_cycles_list: received {} events from API", events.len());
+                let mut grouped: HashMap<String, Vec<AwarenessEvent>> = HashMap::new();
+                for event in events {
+                    // Store cycle_id as numeric u64 string instead of Base36 for compatibility with backend
+                    let cycle_id = event.awareness_cycle_id.as_u64().to_string();
+                    grouped.entry(cycle_id).or_default().push(event);
+                }
+                tracing::info!("refresh_ace_cycles_list: grouped into {} cycles", grouped.len());
+
+                let mut summaries_with_ts: Vec<(i64, AceCycleSummary)> = grouped
+                    .into_iter()
+                    .map(|(cycle_id, mut items)| {
+                        items.sort_by_key(|evt| evt.occurred_at_ms);
+                        let latest_ts = items
+                            .iter()
+                            .map(|evt| evt.occurred_at_ms)
+                            .max()
+                            .unwrap_or_default();
+                        let anchor = items
+                            .first()
+                            .and_then(|evt| serde_json::to_value(&evt.anchor).ok());
+                        let lane = detect_lane(&items);
+                        let status = detect_status(&items);
+
+                        (
+                            latest_ts,
+                            AceCycleSummary {
+                                cycle_id,
+                                lane,
+                                status,
+                                anchor,
+                                budget: None,
+                                latest_sync_point: None,
+                                pending_injections: Vec::new(),
+                                decision_path: None,
+                                metadata: None,
+                            },
+                        )
+                    })
+                    .collect();
+
+                summaries_with_ts.sort_by_key(|(ts, _)| *ts);
+                summaries_with_ts.reverse();
+
+                let summaries: Vec<AceCycleSummary> = summaries_with_ts
+                    .into_iter()
+                    .map(|(_, summary)| summary)
+                    .collect();
+
+                actions.set_ace_cycles(summaries);
+            } else {
+                actions.set_ace_cycles(Vec::new());
+            }
+            actions.set_ace_loading(false);
+        }
+        Err(err) => {
+            tracing::error!("awareness events fetch failed: {err}");
+            actions.set_ace_error(Some(format!("ACE 数据加载失败: {err}")));
+            actions.set_ace_loading(false);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn detect_lane(events: &[AwarenessEvent]) -> AceLane {
+    for event in events.iter().rev() {
+        if let Some(lane) = event.payload.get("lane").and_then(|value| value.as_str()) {
+            match lane {
+                "tool" | "tool_lane" => return AceLane::Tool,
+                "self_reason" | "self" => return AceLane::SelfReason,
+                "collab" | "collaboration" => return AceLane::Collab,
+                _ => return AceLane::Clarify,
+            }
+        }
+    }
+    AceLane::Clarify
+}
+
+#[cfg(target_arch = "wasm32")]
+fn detect_status(events: &[AwarenessEvent]) -> AceCycleStatus {
+    let has_finalized = events
+        .iter()
+        .any(|event| matches!(event.event_type, AwarenessEventType::Finalized));
+
+    let has_rejected = events
+        .iter()
+        .any(|event| matches!(event.event_type, AwarenessEventType::Rejected));
+
+    let event_types: Vec<String> = events
+        .iter()
+        .map(|e| format!("{:?}", e.event_type))
+        .collect();
+
+    tracing::info!(
+        "detect_status (cycle_runner): events={}, has_finalized={}, has_rejected={}, event_types={:?}",
+        events.len(),
+        has_finalized,
+        has_rejected,
+        event_types
+    );
+
+    if has_finalized {
+        AceCycleStatus::Completed
+    } else if has_rejected {
+        AceCycleStatus::Failed
+    } else {
+        AceCycleStatus::Running
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn verify_cycle_after_sse_disconnect(
+    actions: AppActions,
+    is_running: &mut Signal<bool>,
+    stream_handle: &mut Signal<Option<SseHandle>>,
+    cycle_id: u64,
+    cycle_label: String,
+    app_state: AppSignal,
+) {
+    // 关闭SSE流
+    if let Some(handle) = stream_handle.write().take() {
+        handle.close();
+    }
+
+    // 获取客户端
+    let Some(client) = API_CLIENT.get().cloned() else {
+        actions.operation_stage_fail(
+            OperationStageKind::StreamAwait,
+            Some("无法验证周期状态：客户端未初始化".into()),
+        );
+        actions.set_operation_error("SSE 断开且无法验证周期状态".into());
+        is_running.set(false);
+        return;
+    };
+
+    // 获取租户ID
+    let snapshot = app_state.read();
+    let tenant_id = snapshot.tenant_id.clone().or_else(|| {
+        APP_CONFIG
+            .get()
+            .and_then(|cfg| cfg.default_tenant_id.clone())
+    });
+    drop(snapshot);
+
+    let Some(tenant) = tenant_id else {
+        actions.operation_stage_fail(
+            OperationStageKind::StreamAwait,
+            Some("无法验证周期状态：租户未选择".into()),
+        );
+        actions.set_operation_error("SSE 断开且无法验证周期状态".into());
+        is_running.set(false);
+        return;
+    };
+
+    // 查询周期状态
+    actions.set_operation_success(format!("查询周期 {cycle_label} 实际状态..."));
+
+    match client
+        .get_cycle_snapshot::<CycleSnapshotView>(&cycle_label, Some(&tenant))
+        .await
+    {
+        Ok(snapshot) => {
+            // 检查周期的实际状态
+            let status_str = if let Some(outcome) = snapshot.outcomes.last() {
+                outcome.status.as_str()
+            } else {
+                "unknown"
+            };
+
+            match status_str.to_lowercase().as_str() {
+                "completed" | "complete" | "success" => {
+                    // 周期已成功完成
+                    actions.operation_stage_complete(
+                        OperationStageKind::StreamAwait,
+                        Some(format!("周期已完成 ({})", status_str)),
+                    );
+                    actions.set_operation_success(format!(
+                        "周期 {} 已成功完成 (SSE 中断但周期正常结束)",
+                        cycle_label
+                    ));
+
+                    // 触发刷新以更新UI
+                    let actions_refresh = actions.clone();
+                    let app_state_refresh = app_state.clone();
+                    let cycle_label_refresh = cycle_label.clone();
+                    let status_refresh = status_str.to_string();
+
+                    spawn(async move {
+                        refresh_after_cycle(
+                            actions_refresh,
+                            app_state_refresh,
+                            cycle_label_refresh,
+                            status_refresh,
+                        )
+                        .await;
+                    });
+                }
+                "failed" | "failure" | "error" => {
+                    // 周期确实失败了
+                    actions.operation_stage_fail(
+                        OperationStageKind::StreamAwait,
+                        Some(format!("周期失败 ({})", status_str)),
+                    );
+                    actions.set_operation_error(format!("周期 {} 执行失败", cycle_label));
+                }
+                "running" | "awaiting_external" | "pending" => {
+                    // 周期仍在运行中，SSE断开是真实的错误
+                    actions.operation_stage_fail(
+                        OperationStageKind::StreamAwait,
+                        Some("SSE 连接中断，周期仍在运行".into()),
+                    );
+                    actions.set_operation_error(format!(
+                        "周期 {} 仍在运行，但连接已断开。请刷新页面查看最新状态。",
+                        cycle_label
+                    ));
+                }
+                _ => {
+                    // 未知状态
+                    actions.operation_stage_fail(
+                        OperationStageKind::StreamAwait,
+                        Some(format!("周期状态未知 ({})", status_str)),
+                    );
+                    actions.set_operation_error(format!(
+                        "周期 {} 状态未知：{}",
+                        cycle_label, status_str
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            // 无法查询周期状态
+            let err_msg = err.to_string();
+            if err_msg.contains("404") || err_msg.contains("not found") || err_msg.contains("corrupted") {
+                actions.operation_stage_fail(
+                    OperationStageKind::StreamAwait,
+                    Some("周期不存在或数据不兼容".into()),
+                );
+                actions.set_operation_error(format!(
+                    "周期 {} 可能已被清理或数据格式不兼容",
+                    cycle_label
+                ));
+            } else {
+                actions.operation_stage_fail(
+                    OperationStageKind::StreamAwait,
+                    Some(format!("查询失败: {}", err)),
+                );
+                actions.set_operation_error(format!("无法验证周期 {} 状态: {}", cycle_label, err));
+            }
+        }
+    }
+
+    is_running.set(false);
 }

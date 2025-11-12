@@ -9,6 +9,11 @@ use crate::config::AppConfig;
 
 pub type ClientResult<T> = Result<T, ClientError>;
 
+#[derive(Serialize)]
+pub struct AwarenessQuery {
+    pub limit: u32,
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct ThinWaistClient {

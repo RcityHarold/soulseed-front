@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use dioxus::prelude::*;
-use serde::Serialize;
 
+use crate::api::AwarenessQuery;
 use crate::models::{
     AceCycleStatus, AceCycleSummary, AceLane, AwarenessEvent, AwarenessEventType,
     CycleSnapshotView, OutboxMessageView,
@@ -69,11 +69,6 @@ pub fn use_ace_cycles() {
     }
 }
 
-#[derive(Serialize)]
-struct AwarenessQuery {
-    limit: u32,
-}
-
 async fn load_ace_cycles(actions: AppActions, state: AppSignal) {
     let snapshot = state.read();
     let tenant = snapshot.tenant_id.clone().or_else(|| {
@@ -111,11 +106,14 @@ async fn load_ace_cycles(actions: AppActions, state: AppSignal) {
     {
         Ok(env) => {
             if let Some(events) = env.data {
+                tracing::info!("load_ace_cycles: received {} events from API", events.len());
                 let mut grouped: HashMap<String, Vec<AwarenessEvent>> = HashMap::new();
                 for event in events {
-                    let cycle_id = event.awareness_cycle_id.to_string();
+                    // Store cycle_id as numeric u64 string instead of Base36 for compatibility with backend
+                    let cycle_id = event.awareness_cycle_id.as_u64().to_string();
                     grouped.entry(cycle_id).or_default().push(event);
                 }
+                tracing::info!("load_ace_cycles: grouped into {} cycles", grouped.len());
 
                 let mut summaries_with_ts: Vec<(i64, AceCycleSummary)> = grouped
                     .into_iter()
@@ -126,9 +124,19 @@ async fn load_ace_cycles(actions: AppActions, state: AppSignal) {
                             .map(|evt| evt.occurred_at_ms)
                             .max()
                             .unwrap_or_default();
-                        let anchor = items.first().map(|evt| evt.anchor.clone());
+                        // 将 core model 的 AwarenessAnchor 转换为 Value
+                        let anchor = items
+                            .first()
+                            .and_then(|evt| serde_json::to_value(&evt.anchor).ok());
                         let lane = detect_lane(&items);
                         let status = detect_status(&items);
+
+                        tracing::info!(
+                            "Creating cycle summary: cycle_id={}, status={:?}, events={}",
+                            cycle_id,
+                            status,
+                            items.len()
+                        );
 
                         (
                             latest_ts,
@@ -224,23 +232,12 @@ async fn load_cycle_snapshot(actions: AppActions, state: AppSignal) {
         }
     };
 
-    // 将 Base36 格式的 cycle_id 转换为 u64 字符串
-    use soulseed_agi_core_models::AwarenessCycleId;
-    use std::str::FromStr;
-
-    let cycle_id_u64 = match AwarenessCycleId::from_str(&selected) {
-        Ok(id) => id.as_u64().to_string(),
-        Err(_) => {
-            // 如果解析失败，可能已经是 u64 格式，直接使用
-            selected.clone()
-        }
-    };
-
+    // cycle_id is already stored as u64 string format
     let snapshot_res = client
-        .get_cycle_snapshot::<CycleSnapshotView>(&cycle_id_u64, Some(&tenant))
+        .get_cycle_snapshot::<CycleSnapshotView>(&selected, Some(&tenant))
         .await;
     let outbox_res = client
-        .get_cycle_outbox::<Vec<OutboxMessageView>>(&cycle_id_u64, Some(&tenant))
+        .get_cycle_outbox::<Vec<OutboxMessageView>>(&selected, Some(&tenant))
         .await;
 
     match (snapshot_res, outbox_res) {
@@ -283,15 +280,32 @@ fn detect_lane(events: &[AwarenessEvent]) -> AceLane {
 }
 
 fn detect_status(events: &[AwarenessEvent]) -> AceCycleStatus {
-    if events
+    // Finalized 事件现在会被持久化，可以从 awareness events 中推断周期状态
+    let has_finalized = events
         .iter()
-        .any(|event| matches!(event.event_type, AwarenessEventType::Finalized))
-    {
+        .any(|event| matches!(event.event_type, AwarenessEventType::Finalized));
+
+    let has_rejected = events
+        .iter()
+        .any(|event| matches!(event.event_type, AwarenessEventType::Rejected));
+
+    // 列出所有事件类型以便调试
+    let event_types: Vec<String> = events
+        .iter()
+        .map(|e| format!("{:?}", e.event_type))
+        .collect();
+
+    tracing::info!(
+        "detect_status: events={}, has_finalized={}, has_rejected={}, event_types={:?}",
+        events.len(),
+        has_finalized,
+        has_rejected,
+        event_types
+    );
+
+    if has_finalized {
         AceCycleStatus::Completed
-    } else if events
-        .iter()
-        .any(|event| matches!(event.event_type, AwarenessEventType::Rejected))
-    {
+    } else if has_rejected {
         AceCycleStatus::Failed
     } else {
         AceCycleStatus::Running

@@ -538,26 +538,37 @@ fn aggregate_lane_summaries(
                 walltime_allowed_ms += budget.walltime_ms_allowed.unwrap_or(0);
             }
 
-            if let Some(path) = cycle.decision_path.as_ref() {
-                confidence_sum += path.confidence;
-                confidence_samples += 1;
-
-                if let Some(reason) = path.degradation_reason.as_ref() {
-                    degradation.insert(format_degradation_reason(reason));
+            if let Some(path_value) = cycle.decision_path.as_ref() {
+                // decision_path 现在是 Value 类型，需要提取字段
+                if let Some(confidence) = path_value.get("confidence").and_then(|v| v.as_f64()).map(|v| v as f32) {
+                    confidence_sum += confidence;
+                    confidence_samples += 1;
                 }
 
-                if let Some(tokens) = path.budget_plan.tokens {
-                    planned_tokens += tokens;
-                    has_planned_tokens = true;
+                if let Some(reason_str) = path_value.get("degradation_reason").and_then(|v| v.as_str()) {
+                    // 简化处理：直接使用字符串
+                    degradation.insert(reason_str.to_string());
                 }
 
-                if let Some(walltime) = path.budget_plan.walltime_ms {
-                    planned_walltime += walltime;
-                    has_planned_walltime = true;
+                if let Some(budget_plan) = path_value.get("budget_plan") {
+                    if let Some(tokens) = budget_plan.get("tokens").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()) {
+                        planned_tokens += tokens;
+                        has_planned_tokens = true;
+                    }
+
+                    if let Some(walltime) = budget_plan.get("walltime_ms").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()) {
+                        planned_walltime += walltime;
+                        has_planned_walltime = true;
+                    }
                 }
 
-                for highlight in describe_plan(&path.plan) {
-                    plan_highlights.insert(highlight);
+                // plan 字段处理：尝试反序列化
+                if let Some(plan_value) = path_value.get("plan") {
+                    if let Ok(plan) = serde_json::from_value::<DecisionPlan>(plan_value.clone()) {
+                        for highlight in describe_plan(&plan) {
+                            plan_highlights.insert(highlight);
+                        }
+                    }
                 }
             }
         }

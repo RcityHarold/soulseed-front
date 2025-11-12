@@ -802,7 +802,20 @@ impl AppActions {
             .iter_mut()
             .find(|cycle| cycle.cycle_id == cycle_id)
         {
-            summary.status = AceCycleStatus::from_label(&snapshot.schedule.status);
+            // 优先从 outcomes 获取实际执行状态，而不是 schedule.status
+            summary.status = snapshot
+                .outcomes
+                .last()
+                .and_then(|outcome| {
+                    if outcome.status == "completed" {
+                        Some(AceCycleStatus::Completed)
+                    } else if outcome.status == "failed" || outcome.status == "rejected" {
+                        Some(AceCycleStatus::Failed)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| AceCycleStatus::from_label(&snapshot.schedule.status));
             summary.lane = AceLane::from_label(&snapshot.schedule.lane);
             summary.anchor = Some(snapshot.schedule.anchor.clone());
             summary.budget = Some((&snapshot.schedule.budget).into());
@@ -821,7 +834,11 @@ impl AppActions {
                     priority: injection.priority.clone(),
                     author_role: injection.author_role.clone(),
                     payload: injection.payload.clone(),
-                    status: injection.submitted_at.clone(),
+                    status: if injection.submitted_at.is_null() {
+                        None
+                    } else {
+                        Some(injection.submitted_at.to_string())
+                    },
                 })
                 .collect();
             if !snapshot.sync_point.context_manifest.is_null() {

@@ -1,12 +1,42 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 pub use soulseed_agi_core_models::legacy::dialogue_event::DialogueEvent;
 pub use soulseed_agi_core_models::{
-    AccessClass, AwarenessAnchor, AwarenessDegradationReason, AwarenessEvent, AwarenessEventType,
-    AwarenessFork, ConversationScenario, DecisionPath, DecisionPlan, DialogueEventType,
+    AccessClass, AwarenessDegradationReason, AwarenessEvent, AwarenessEventType,
+    AwarenessFork, ConversationScenario, DecisionPlan, DialogueEventType,
     SyncPointKind, SyncPointReport,
 };
+
+// 前端不再定义自己的 AwarenessAnchor 和 DecisionPath
+// anchor 和 decision_path 字段都使用 Value 类型来避免严格的 ID 验证
+
+// 辅助函数：反序列化可以是字符串或整数的 ID 字段
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        _ => Err(serde::de::Error::custom("expected string or number")),
+    }
+}
+
+// 辅助函数：反序列化可选的字符串或整数 ID 字段
+fn deserialize_optional_string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        _ => Err(serde::de::Error::custom("expected string, number, or null")),
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TimelinePage<T> {
@@ -88,11 +118,13 @@ pub struct AceBudget {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AceCycleSummary {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
     pub lane: AceLane,
     pub status: AceCycleStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<AwarenessAnchor>,
+    // anchor 也使用 Value 类型，避免严格的 ID 验证
+    pub anchor: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<AceBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,13 +132,14 @@ pub struct AceCycleSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_injections: Vec<HitlInjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_path: Option<DecisionPath>,
+    pub decision_path: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CycleOutcomeSummary {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +148,7 @@ pub struct CycleOutcomeSummary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CycleTriggerResponse {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,13 +157,17 @@ pub struct CycleTriggerResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CycleScheduleView {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
     pub lane: String,
-    pub anchor: AwarenessAnchor,
+    // anchor 使用 Value 类型，避免严格的 ID 验证
+    pub anchor: Value,
     pub budget: BudgetSnapshotView,
-    pub created_at: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub decision_events: Vec<AwarenessEvent>,
+    // created_at 是 OffsetDateTime，序列化为数组格式
+    pub created_at: Value,
+    // decision_events 使用 Value 类型，因为 AwarenessEvent 包含 flatten 的 AwarenessAnchor，其中有严格的 TenantId
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub decision_events: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explain_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,10 +204,13 @@ impl From<&BudgetSnapshotView> for AceBudget {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncPointInputView {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
     pub kind: SyncPointKind,
-    pub anchor: AwarenessAnchor,
-    pub events: Vec<DialogueEvent>,
+    // anchor 使用 Value 类型，避免严格的 ID 验证
+    pub anchor: Value,
+    // events 也使用 Value 类型，因为 DialogueEvent 包含严格的 TenantId 类型
+    pub events: Value,
     pub budget: BudgetSnapshotView,
     // timeframe 在后端是 (OffsetDateTime, OffsetDateTime)，序列化为嵌套数组
     // 使用 Value 类型来接收任意 JSON 格式
@@ -186,22 +227,30 @@ pub struct SyncPointInputView {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HitlInjectionView {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub injection_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_string_or_number"
+    )]
+    pub tenant_id: Option<String>,
     pub author_role: String,
     pub priority: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitted_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub submitted_at: Value,
     #[serde(default)]
     pub payload: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OutboxMessageView {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub event_id: String,
-    pub payload: AwarenessEvent,
+    // payload 使用 Value 类型，因为 AwarenessEvent 包含严格的 ID 类型
+    pub payload: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -217,17 +266,21 @@ pub struct CycleSnapshotView {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RouterDecisionView {
     pub plan: RoutePlanView,
-    pub decision_path: DecisionPath,
+    // decision_path 现在是 Value 类型，避免严格的 ID 验证
+    pub decision_path: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected: Vec<(String, String)>,
     pub context_digest: String,
-    pub issued_at: String,
+    // issued_at 是 OffsetDateTime，序列化为数组格式
+    pub issued_at: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoutePlanView {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
-    pub anchor: AwarenessAnchor,
+    // anchor 使用 Value 类型，避免严格的 ID 验证
+    pub anchor: Value,
     pub fork: AwarenessFork,
     pub decision_plan: DecisionPlan,
     pub budget: RouteBudgetEstimate,
@@ -261,7 +314,9 @@ pub struct RouteExplainView {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HitlInjection {
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub injection_id: String,
+    #[serde(deserialize_with = "deserialize_string_or_number")]
     pub cycle_id: String,
     pub priority: String,
     pub author_role: String,

@@ -120,7 +120,7 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             cycle_id: "cyc-clarify-001".into(),
             lane: AceLane::Clarify,
             status: AceCycleStatus::Running,
-            anchor: Some(clarify_anchor.clone()),
+            anchor: serde_json::to_value(&clarify_anchor).ok(),
             budget: Some(AceBudget {
                 tokens_allowed: Some(6_000),
                 tokens_spent: Some(1_450),
@@ -129,10 +129,10 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             }),
             latest_sync_point: None,
             pending_injections: vec![],
-            decision_path: Some(build_clarify_decision_path(
+            decision_path: serde_json::to_value(&build_clarify_decision_path(
                 clarify_anchor,
                 AwarenessCycleId::new(9_001),
-            )),
+            )).ok(),
             metadata: Some(json!({
                 "stage": "question",
                 "priority": "p1_high",
@@ -143,7 +143,7 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             cycle_id: "cyc-tool-002".into(),
             lane: AceLane::Tool,
             status: AceCycleStatus::Completed,
-            anchor: Some(tool_anchor.clone()),
+            anchor: serde_json::to_value(&tool_anchor).ok(),
             budget: Some(AceBudget {
                 tokens_allowed: Some(8_000),
                 tokens_spent: Some(5_600),
@@ -152,10 +152,10 @@ pub fn sample_ace_cycles() -> Vec<AceCycleSummary> {
             }),
             latest_sync_point: None,
             pending_injections: vec![],
-            decision_path: Some(build_tool_decision_path(
+            decision_path: serde_json::to_value(&build_tool_decision_path(
                 tool_anchor,
                 AwarenessCycleId::new(9_002),
-            )),
+            )).ok(),
             metadata: Some(json!({
                 "tool_plan": "doc.search -> summarizer",
                 "last_tool": "doc.search",

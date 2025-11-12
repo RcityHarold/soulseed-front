@@ -8,7 +8,6 @@ use crate::models::{
 use crate::state::{use_app_actions, use_app_state, AppActions, AuditActionKind};
 use dioxus::prelude::*;
 use serde_json::{to_string_pretty, Value};
-use soulseed_agi_core_models::awareness::DecisionBudgetEstimate;
 use std::collections::HashMap;
 use std::rc::Rc;
 use time::{Duration, OffsetDateTime};
@@ -97,12 +96,17 @@ fn CycleList(props: CycleListProps) -> Element {
     rsx! {
         div { class: "md:w-1/3 space-y-2",
             for cycle in props.cycles.iter().cloned() {
-                CycleListItem {
-                    key: cycle.cycle_id.clone(),
-                    cycle,
-                    selected_cycle_id: props.selected_cycle_id.clone(),
-                    actions: props.actions.clone(),
-                    snapshot_loading: props.snapshot_loading,
+                {
+                    let cycle_id = cycle.cycle_id.clone();
+                    rsx! {
+                        CycleListItem {
+                            key: cycle_id,
+                            cycle,
+                            selected_cycle_id: props.selected_cycle_id.clone(),
+                            actions: props.actions.clone(),
+                            snapshot_loading: props.snapshot_loading,
+                        }
+                    }
                 }
             }
         }
@@ -229,7 +233,7 @@ fn CycleDetail(props: CycleDetailProps) -> Element {
 
     let outbox = props.outbox.clone();
     let router_decision = snapshot.schedule.router_decision.clone();
-    let created_at = snapshot.schedule.created_at.clone();
+    let created_at_str = format_offset_datetime_array(&snapshot.schedule.created_at);
     let outcomes = snapshot.outcomes.clone();
 
     rsx! {
@@ -239,7 +243,7 @@ fn CycleDetail(props: CycleDetailProps) -> Element {
                 li { "周期 ID: {cycle.cycle_id}" }
                 li { "Lane: {format_lane(&cycle.lane)}" }
                 li { "状态: {format_status(&cycle.status)}" }
-                li { "创建时间: {created_at}" }
+                li { "创建时间: {created_at_str}" }
             }
             if let Some(budget) = cycle.budget.as_ref() {
                 div { class: "flex flex-wrap gap-2 text-[11px]",
@@ -303,8 +307,10 @@ fn render_router_decision(decision: &RouterDecisionView) -> Element {
     let plan = &decision.plan;
     let fork_scores = extract_fork_scores(&plan.explain.diagnostics);
     let degradation_map = collect_degradation_reasons(decision);
-    let selected_budget_text =
-        format_route_budget(&plan.budget, &decision.decision_path.budget_plan);
+
+    // 从 decision_path (Value 类型) 中提取 budget_plan
+    let budget_plan_value = decision.decision_path.get("budget_plan").cloned().unwrap_or(Value::Null);
+    let selected_budget_text = format_route_budget(&plan.budget, &budget_plan_value);
 
     let fork_rows: Vec<ForkRow> = ROUTER_FORKS
         .iter()
@@ -361,7 +367,14 @@ fn render_router_decision(decision: &RouterDecisionView) -> Element {
     };
     let rejected = decision.rejected.clone();
     let priority_text = format!("{:.2}", plan.priority);
-    let confidence_text = format!("{:.2}", decision.decision_path.confidence);
+
+    // 从 decision_path (Value 类型) 中提取 confidence
+    let confidence = decision.decision_path.get("confidence")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(0.0);
+    let confidence_text = format!("{:.2}", confidence);
+    let issued_at_str = format_offset_datetime_array(&decision.issued_at);
 
     rsx! {
         div { class: "space-y-3 rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-700",
@@ -369,7 +382,7 @@ fn render_router_decision(decision: &RouterDecisionView) -> Element {
             div { class: "grid gap-2 md:grid-cols-2",
                 div { class: "space-y-1",
                     p { "上下文摘要: {decision.context_digest}" }
-                    p { "发出时间: {decision.issued_at}" }
+                    p { "发出时间: {issued_at_str}" }
                     p { "当前权重: {priority_text}" }
                     if let Some(ref degrade) = selected_degradation {
                         p { class: "text-amber-600", "降级: {degrade}" }
@@ -410,13 +423,22 @@ fn render_router_decision(decision: &RouterDecisionView) -> Element {
             }
             div { class: "space-y-1 rounded border border-slate-100 bg-white p-3",
                 h5 { class: "text-[11px] font-semibold text-slate-800 uppercase tracking-wide", "DecisionPath" }
-                p { "分叉: {fork_display_name(&decision.decision_path.fork)}" }
+                // 从 decision_path (Value 类型) 中提取 fork
+                if let Some(fork_str) = decision.decision_path.get("fork").and_then(|v| v.as_str()) {
+                    if let Ok(fork) = serde_json::from_value::<AwarenessFork>(Value::String(fork_str.to_string())) {
+                        p { "分叉: {fork_display_name(&fork)}" }
+                    }
+                }
                 p { "信心: {confidence_text}" }
-                if let Some(text) = format_decision_budget_estimate(&decision.decision_path.budget_plan) {
+                // budget_plan_value 已经在前面提取了
+                if let Some(text) = format_decision_budget_estimate(&budget_plan_value) {
                     p { "预算估计: {text}" }
                 }
-                if let Some(reason) = decision.decision_path.degradation_reason.as_ref() {
-                    p { class: "text-[11px] text-amber-600", "降级: {awareness_degradation_label(reason)}" }
+                // 从 decision_path (Value 类型) 中提取 degradation_reason
+                if let Some(reason_value) = decision.decision_path.get("degradation_reason") {
+                    if let Ok(reason) = serde_json::from_value::<AwarenessDegradationReason>(reason_value.clone()) {
+                        p { class: "text-[11px] text-amber-600", "降级: {awareness_degradation_label(&reason)}" }
+                    }
                 }
             }
             if let Some(json) = plan_detail_json {
@@ -505,7 +527,7 @@ fn summarize_components(value: &Value) -> Option<String> {
 
 fn format_route_budget(
     budget: &RouteBudgetEstimate,
-    decision_budget: &DecisionBudgetEstimate,
+    decision_budget: &Value,
 ) -> String {
     let mut parts = vec![
         format!("tokens {}", budget.tokens),
@@ -520,15 +542,15 @@ fn format_route_budget(
     parts.join(" | ")
 }
 
-fn format_decision_budget_estimate(budget: &DecisionBudgetEstimate) -> Option<String> {
+fn format_decision_budget_estimate(budget: &Value) -> Option<String> {
     let mut parts = Vec::new();
-    if let Some(tokens) = budget.tokens {
+    if let Some(tokens) = budget.get("tokens").and_then(|v| v.as_u64()) {
         parts.push(format!("tokens ≤ {}", tokens));
     }
-    if let Some(wall) = budget.walltime_ms {
+    if let Some(wall) = budget.get("walltime_ms").and_then(|v| v.as_u64()) {
         parts.push(format!("wall ≤ {} ms", wall));
     }
-    if let Some(cost) = budget.external_cost {
+    if let Some(cost) = budget.get("external_cost").and_then(|v| v.as_f64()) {
         parts.push(format!("cost ≤ {:.2}", cost));
     }
     if parts.is_empty() {
@@ -548,9 +570,16 @@ fn collect_degradation_reasons(decision: &RouterDecisionView) -> HashMap<Awarene
         }
     }
 
-    if let Some(reason) = decision.decision_path.degradation_reason.as_ref() {
-        map.entry(decision.decision_path.fork)
-            .or_insert_with(|| awareness_degradation_label(reason).to_string());
+    // 从 decision_path (Value 类型) 中提取 degradation_reason 和 fork
+    if let Some(reason_value) = decision.decision_path.get("degradation_reason") {
+        if let Ok(reason) = serde_json::from_value::<AwarenessDegradationReason>(reason_value.clone()) {
+            if let Some(fork_str) = decision.decision_path.get("fork").and_then(|v| v.as_str()) {
+                if let Ok(fork) = serde_json::from_value::<AwarenessFork>(Value::String(fork_str.to_string())) {
+                    map.entry(fork)
+                        .or_insert_with(|| awareness_degradation_label(&reason).to_string());
+                }
+            }
+        }
     }
 
     if let Some((fork, reason)) = extract_budget_exceeded(&plan.explain.diagnostics) {
@@ -648,11 +677,12 @@ fn render_sync_point_section(sync_point: &SyncPointInputView, actions: AppAction
         .get("segments")
         .and_then(|v| v.as_array())
         .map(|segments| segments.len());
-    let timeframe_label = format!("{} → {}", sync_point.timeframe.0, sync_point.timeframe.1);
+    let timeframe_label = format_timeframe(&sync_point.timeframe);
     let budget_label = format_sync_point_budget(&sync_point.budget);
     let kind_label = format!("{:?}", sync_point.kind);
 
-    let event_rows = build_sync_event_rows(&sync_point.events);
+    // events 现在是 Value 类型
+    let event_rows = build_sync_event_rows_from_value(&sync_point.events);
     let events_count = event_rows.len();
     let pending = sync_point.pending_injections.clone();
     let pending_count = pending.len();
@@ -824,8 +854,8 @@ fn render_sync_point_pending_section(
                     for item in pending.iter() {
                         div { class: "rounded border border-slate-200 bg-slate-50 p-2 space-y-1",
                             p { class: "font-semibold", "{format_pending_injection_label(item)}" }
-                            if let Some(submitted) = item.submitted_at.as_ref() {
-                                p { class: "text-[10px] text-slate-500", "Submitted At: {submitted}" }
+                            if !item.submitted_at.is_null() {
+                                p { class: "text-[10px] text-slate-500", "Submitted At: {item.submitted_at}" }
                             }
                             pre { class: "overflow-x-auto rounded bg-slate-900 p-2 text-[10px] text-slate-100", "{to_pretty_json(&item.payload)}" }
                         }
@@ -1006,8 +1036,16 @@ fn render_outbox_row(row: OutboxRow, actions: AppActions) -> Element {
                     class: "rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500",
                     onclick: move |_| {
                         let event_id_for_msg = event_id_label.clone();
-                        timeline_actions.append_timeline(Vec::new(), vec![event_for_timeline.clone()], None);
-                        timeline_actions.set_operation_success(format!("Outbox 事件 {} 已写入时间线", event_id_for_msg));
+                        // 尝试将 Value 反序列化为 AwarenessEvent
+                        match serde_json::from_value::<AwarenessEvent>(event_for_timeline.clone()) {
+                            Ok(awareness_event) => {
+                                timeline_actions.append_timeline(Vec::new(), vec![awareness_event], None);
+                                timeline_actions.set_operation_success(format!("Outbox 事件 {} 已写入时间线", event_id_for_msg));
+                            }
+                            Err(e) => {
+                                timeline_actions.set_operation_error(format!("无法将事件写入时间线: {}", e));
+                            }
+                        }
                     },
                     "写入时间线"
                 }
@@ -1024,7 +1062,7 @@ fn render_outbox_row(row: OutboxRow, actions: AppActions) -> Element {
 
 #[derive(Clone)]
 struct OutboxRow {
-    event: AwarenessEvent,
+    event: Value,
     event_id: String,
     cycle_id: u64,
     occurred_at: String,
@@ -1043,16 +1081,34 @@ fn build_outbox_rows(outbox: &[OutboxMessageView]) -> Vec<OutboxRow> {
         .iter()
         .map(|item| {
             let event = item.payload.clone();
-            let event_id = event.event_id.to_base36();
-            let event_type_label = awareness_event_label(&event.event_type);
-            let occurred_at = format_timestamp_ms(event.occurred_at_ms);
+
+            // 从 Value 中提取字段
+            let event_id = event
+                .get("event_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let event_type_str = event
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+            let event_type_label = event_type_str.to_string();
+
+            let occurred_at_ms = event
+                .get("occurred_at_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let occurred_at = format_timestamp_ms(occurred_at_ms);
+
             let degradation = event
-                .degradation_reason
-                .as_ref()
-                .map(awareness_degradation_label)
-                .map(|label| label.to_string());
-            let payload_summary = summarize_outbox_payload(&event.payload);
-            let payload_json = serde_json::to_string_pretty(&event.payload)
+                .get("degradation_reason")
+                .and_then(|v| serde_json::from_value::<AwarenessDegradationReason>(v.clone()).ok())
+                .map(|reason| awareness_degradation_label(&reason).to_string());
+
+            let payload_value = event.get("payload").cloned().unwrap_or(Value::Null);
+            let payload_summary = summarize_outbox_payload(&payload_value);
+            let payload_json = serde_json::to_string_pretty(&payload_value)
                 .ok()
                 .map(Rc::new);
             let event_json = serde_json::to_string_pretty(&event).ok().map(Rc::new);
@@ -1162,6 +1218,43 @@ fn build_sync_event_rows(events: &[DialogueEvent]) -> Vec<SyncEventRow> {
         .collect()
 }
 
+fn build_sync_event_rows_from_value(events_value: &Value) -> Vec<SyncEventRow> {
+    let Some(events) = events_value.as_array() else {
+        return Vec::new();
+    };
+
+    events
+        .iter()
+        .filter_map(|event| {
+            let event_id = event
+                .get("event_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let event_type = event
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown")
+                .to_string();
+            let sequence = event.get("sequence_number").and_then(|v| v.as_u64()).unwrap_or(0);
+            let channel = event
+                .get("metadata")
+                .and_then(|m| m.get("channel"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let summary = extract_event_summary_from_value(event);
+
+            Some(SyncEventRow {
+                event_id,
+                event_type,
+                sequence,
+                channel,
+                summary,
+            })
+        })
+        .collect()
+}
+
 fn extract_event_summary(event: &DialogueEvent) -> String {
     if let Some(text) = event.metadata.get("text").and_then(|value| value.as_str()) {
         return truncate_text(text, 96);
@@ -1175,12 +1268,55 @@ fn extract_event_summary(event: &DialogueEvent) -> String {
     "-".into()
 }
 
+fn extract_event_summary_from_value(event: &Value) -> String {
+    if let Some(metadata) = event.get("metadata") {
+        if let Some(text) = metadata.get("text").and_then(|v| v.as_str()) {
+            return truncate_text(text, 96);
+        }
+        if let Some(note) = metadata.get("note").and_then(|v| v.as_str()) {
+            return truncate_text(note, 96);
+        }
+        if let Some(kind) = metadata.get("kind").and_then(|v| v.as_str()) {
+            return kind.to_string();
+        }
+    }
+    "-".into()
+}
+
 fn truncate_text(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         text.to_string()
     } else {
         format!("{}…", text.chars().take(limit).collect::<String>())
     }
+}
+
+fn format_timeframe(timeframe: &Value) -> String {
+    // timeframe 是 (OffsetDateTime, OffsetDateTime) 序列化后的嵌套数组
+    // [[year, day_of_year, hour, minute, second, nanosecond, ...], [year, day_of_year, ...]]
+    if let Some(arr) = timeframe.as_array() {
+        if arr.len() >= 2 {
+            let start_str = format_offset_datetime_array(&arr[0]);
+            let end_str = format_offset_datetime_array(&arr[1]);
+            return format!("{} → {}", start_str, end_str);
+        }
+    }
+    "Unknown → Unknown".to_string()
+}
+
+fn format_offset_datetime_array(arr: &Value) -> String {
+    // OffsetDateTime 数组: [year, day_of_year, hour, minute, second, nanosecond, ...]
+    if let Some(components) = arr.as_array() {
+        if components.len() >= 5 {
+            let year = components[0].as_i64().unwrap_or(0);
+            let day = components[1].as_i64().unwrap_or(0);
+            let hour = components[2].as_i64().unwrap_or(0);
+            let minute = components[3].as_i64().unwrap_or(0);
+            let second = components[4].as_i64().unwrap_or(0);
+            return format!("{}-{:03}T{:02}:{:02}:{:02}", year, day, hour, minute, second);
+        }
+    }
+    "Unknown".to_string()
 }
 
 fn format_sync_point_budget(budget: &BudgetSnapshotView) -> String {
