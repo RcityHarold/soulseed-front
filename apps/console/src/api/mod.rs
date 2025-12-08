@@ -6,6 +6,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::config::AppConfig;
+use crate::models::CausalChainQuery;
 
 pub type ClientResult<T> = Result<T, ClientError>;
 
@@ -237,6 +238,451 @@ impl ThinWaistClient {
     {
         let path = format!("tenants/{tenant_id}/explain/indices");
         let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    // ========================================================================
+    // 元认知分析 API (Metacognition)
+    // ========================================================================
+
+    /// 获取元认知分析结果
+    pub async fn get_metacognition_analysis<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: &TQuery,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/metacognition/analysis");
+        let builder = self
+            .request(Method::GET, &path, Some(tenant_id))?
+            .query(query);
+        self.send(builder).await
+    }
+
+    /// 获取因果推理链
+    pub async fn get_metacognition_causal_chain<TRes>(
+        &self,
+        tenant_id: &str,
+        event_id: &str,
+        query: Option<&CausalChainQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/metacognition/events/{event_id}/causal-chain");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    /// 获取性能画像
+    pub async fn get_metacognition_performance_profile<TRes>(
+        &self,
+        tenant_id: &str,
+        ac_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/metacognition/ac/{ac_id}/performance");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 获取决策审计记录
+    pub async fn get_metacognition_decision_audit<TRes>(
+        &self,
+        tenant_id: &str,
+        decision_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/metacognition/decisions/{decision_id}/audit");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 检测元认知模式
+    pub async fn get_metacognition_patterns<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: Option<&TQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/metacognition/patterns");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    // ========================================================================
+    // 自主延续 API (Autonomous)
+    // ========================================================================
+
+    /// 获取自主延续会话列表
+    pub async fn get_autonomous_sessions<TRes>(
+        &self,
+        tenant_id: &str,
+        status: Option<&str>,
+        limit: Option<usize>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let mut path = format!("tenants/{tenant_id}/autonomous/sessions");
+        let mut params = vec![];
+        if let Some(s) = status {
+            params.push(format!("status={}", s));
+        }
+        if let Some(l) = limit {
+            params.push(format!("limit={}", l));
+        }
+        if !params.is_empty() {
+            path = format!("{}?{}", path, params.join("&"));
+        }
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 启动自主延续会话
+    pub async fn post_autonomous_start<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/autonomous/sessions");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
+    /// 获取自主延续会话状态
+    pub async fn get_autonomous_session<TRes>(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/autonomous/sessions/{session_id}");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 终止自主延续会话
+    pub async fn post_autonomous_terminate<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/autonomous/sessions/{session_id}/stop");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
+    /// 获取场景栈状态
+    pub async fn get_autonomous_scenario_stack<TRes>(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/autonomous/sessions/{session_id}/scenarios");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    // ========================================================================
+    // 版本链 API (Version Chain)
+    // ========================================================================
+
+    /// 获取版本链摘要
+    pub async fn get_version_chain_summary<TRes>(
+        &self,
+        tenant_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/version-chain/{entity_id}?entity_type={entity_type}");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 获取版本差异（暂未实现后端）
+    pub async fn get_version_diff<TRes>(
+        &self,
+        tenant_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        from_version: u32,
+        to_version: u32,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!(
+            "tenants/{tenant_id}/version-chain/{entity_id}/diff?entity_type={entity_type}&from={from_version}&to={to_version}"
+        );
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 获取图谱节点详情
+    pub async fn get_graph_node<TRes>(
+        &self,
+        tenant_id: &str,
+        node_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/graph/nodes/{node_id}");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 获取图谱边详情
+    pub async fn get_graph_edges<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: Option<&TQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/graph/edges");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    // ========================================================================
+    // DFR 决策增强 API
+    // ========================================================================
+
+    /// 获取决策详情
+    pub async fn get_dfr_decision<TRes>(
+        &self,
+        tenant_id: &str,
+        decision_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/dfr/decisions/{decision_id}");
+        let builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    /// 获取决策指纹列表
+    pub async fn get_dfr_fingerprints<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: Option<&TQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/dfr/fingerprints");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    /// 匹配决策指纹
+    pub async fn post_dfr_match_fingerprint<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/dfr/fingerprints/match");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
+    // ========================================================================
+    // SurrealDB 原生功能 API
+    // ========================================================================
+
+    /// 向量搜索
+    pub async fn post_surreal_vector_search<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/search/vector");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
+    /// 时序聚合查询
+    pub async fn get_surreal_timeseries_aggregate<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: &TQuery,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/timeseries/aggregate");
+        let builder = self
+            .request(Method::GET, &path, Some(tenant_id))?
+            .query(query);
+        self.send(builder).await
+    }
+
+    /// 创建实时订阅
+    pub async fn post_surreal_subscribe<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/realtime/subscribe");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
+    /// 取消实时订阅
+    pub async fn delete_surreal_subscription<TRes>(
+        &self,
+        tenant_id: &str,
+        subscription_id: &str,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/realtime/subscriptions/{subscription_id}");
+        let builder = self.request(Method::DELETE, &path, Some(tenant_id))?;
+        self.send(builder).await
+    }
+
+    // ========================================================================
+    // 演化事件 API (Evolution)
+    // ========================================================================
+
+    /// 获取群体演化事件列表
+    pub async fn get_evolution_group<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: Option<&TQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/evolution/groups");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    /// 获取个体 AI 演化事件
+    pub async fn get_evolution_ai<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        ai_id: &str,
+        query: Option<&TQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/evolution/ai/{ai_id}");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    /// 获取关系演化事件
+    pub async fn get_evolution_relationships<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: Option<&TQuery>,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/evolution/relationships");
+        let mut builder = self.request(Method::GET, &path, Some(tenant_id))?;
+        if let Some(q) = query {
+            builder = builder.query(q);
+        }
+        self.send(builder).await
+    }
+
+    /// 获取演化时间线
+    pub async fn get_evolution_timeline<TQuery, TRes>(
+        &self,
+        tenant_id: &str,
+        query: &TQuery,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TQuery: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/evolution/timeline");
+        let builder = self
+            .request(Method::GET, &path, Some(tenant_id))?
+            .query(query);
         self.send(builder).await
     }
 
