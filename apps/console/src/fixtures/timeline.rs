@@ -102,7 +102,7 @@ pub fn sample_context_bundle() -> (ContextBundleView, ExplainIndices) {
             degradation_reason: Some("budget_tokens".into()),
         },
         ace: AceExplainSection {
-            sync_point: Some(crate::models::SyncPointKind::ClarifyAnswered),
+            sync_point: Some(serde_json::Value::String("clarify_answered".into())),
             degradation_reason: Some("clarify_exhausted".into()),
         },
     };

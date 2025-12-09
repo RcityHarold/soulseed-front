@@ -579,6 +579,40 @@ impl ThinWaistClient {
         self.send(builder).await
     }
 
+    /// 索引内容（用于向量搜索）
+    pub async fn post_surreal_index_content<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/search/index");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
+    /// 批量索引内容
+    pub async fn post_surreal_batch_index<TReq, TRes>(
+        &self,
+        tenant_id: &str,
+        payload: &TReq,
+    ) -> ClientResult<ApiEnvelope<TRes>>
+    where
+        TReq: Serialize + ?Sized,
+        TRes: DeserializeOwned,
+    {
+        let path = format!("tenants/{tenant_id}/search/index/batch");
+        let builder = self
+            .request(Method::POST, &path, Some(tenant_id))?
+            .json(payload);
+        self.send(builder).await
+    }
+
     /// 创建实时订阅
     pub async fn post_surreal_subscribe<TReq, TRes>(
         &self,
@@ -768,17 +802,24 @@ impl ThinWaistClient {
             return Err(ClientError::EmptyResponse(status));
         }
 
-        let envelope: ApiEnvelope<T> = serde_json::from_slice(&bytes).map_err(ClientError::from)?;
-
-        if status.is_success() && envelope.success {
-            Ok(envelope)
-        } else if let Some(err) = envelope.error.clone() {
-            Err(ClientError::Api(err.with_status(status)))
-        } else {
-            Err(ClientError::UnexpectedStatus {
-                status,
-                body: bytes.to_vec(),
-            })
+        // 首先尝试解析为 ApiEnvelope
+        match serde_json::from_slice::<ApiEnvelope<T>>(&bytes) {
+            Ok(envelope) => {
+                if status.is_success() && envelope.success {
+                    Ok(envelope)
+                } else if let Some(err) = envelope.error.clone() {
+                    Err(ClientError::Api(err.with_status(status)))
+                } else {
+                    Err(ClientError::UnexpectedStatus {
+                        status,
+                        body: bytes.to_vec(),
+                    })
+                }
+            }
+            Err(_) => {
+                // 如果无法解析为 ApiEnvelope，尝试使用 map_plain_error 处理
+                Err(map_plain_error(status, &bytes))
+            }
         }
     }
 }
@@ -793,14 +834,36 @@ struct PlainAceError {
 }
 
 fn map_plain_error(status: StatusCode, bytes: &[u8]) -> ClientError {
+    // 首先尝试解析为 ApiErrorBody
     if let Ok(body) = serde_json::from_slice::<ApiErrorBody>(bytes) {
         return ClientError::Api(body.with_status(status));
     }
 
+    // 尝试解析为 { "error": "..." } 格式
     if let Ok(wrapper) = serde_json::from_slice::<PlainAceError>(bytes) {
         return ClientError::Api(ApiErrorBody {
             code: "ace_error".into(),
             message: wrapper.error,
+            details: None,
+            status: Some(status),
+        });
+    }
+
+    // 尝试解析为纯 JSON 字符串 (如 "error message")
+    if let Ok(plain_string) = serde_json::from_slice::<String>(bytes) {
+        return ClientError::Api(ApiErrorBody {
+            code: "server_error".into(),
+            message: plain_string,
+            details: None,
+            status: Some(status),
+        });
+    }
+
+    // 最后尝试作为纯文本处理
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return ClientError::Api(ApiErrorBody {
+            code: "server_error".into(),
+            message: text.to_string(),
             details: None,
             status: Some(status),
         });

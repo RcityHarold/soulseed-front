@@ -4,15 +4,20 @@
 
 use dioxus::prelude::*;
 
-use crate::hooks::surreal::{use_live_subscription, use_timeseries_aggregate, use_vector_search};
+use crate::hooks::surreal::{
+    use_content_indexer, use_live_subscription, use_timeseries_aggregate, use_vector_search,
+};
 use crate::models::TimeSeriesAggregateResponse;
 
 /// 向量搜索面板组件
 #[component]
 pub fn VectorSearchPanel() -> Element {
-    let searcher = use_vector_search();
+    let mut searcher = use_vector_search();
 
     let mut query_text = use_signal(String::new);
+    let mut top_k = use_signal(|| 10u32);
+
+    let is_searching = *searcher.searching.read();
 
     rsx! {
         section { class: "space-y-3",
@@ -30,15 +35,58 @@ pub fn VectorSearchPanel() -> Element {
                             rows: "3",
                             placeholder: "输入要搜索的文本...",
                             value: "{query_text}",
+                            disabled: is_searching,
                             oninput: move |evt| query_text.set(evt.value().clone())
                         }
                     }
-                    p { class: "text-xs text-slate-500", "向量搜索功能需要后端支持" }
+                    div { class: "flex items-center gap-4",
+                        div { class: "flex-1",
+                            label { class: "block text-xs text-slate-500 mb-1", "返回数量 (Top K)" }
+                            input {
+                                r#type: "number",
+                                class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
+                                min: "1",
+                                max: "100",
+                                value: "{top_k}",
+                                disabled: is_searching,
+                                oninput: move |evt| {
+                                    if let Ok(v) = evt.value().parse::<u32>() {
+                                        top_k.set(v.clamp(1, 100));
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "flex-1 flex items-end",
+                            button {
+                                class: if is_searching {
+                                    "w-full px-4 py-2 text-sm font-medium text-white bg-blue-400 rounded-lg cursor-not-allowed"
+                                } else {
+                                    "w-full px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                                },
+                                disabled: is_searching,
+                                onclick: move |_| {
+                                    let query = query_text.read().clone();
+                                    let k = *top_k.read();
+                                    spawn(async move {
+                                        searcher.search(query, None, Some(k)).await;
+                                    });
+                                },
+                                if is_searching {
+                                    "搜索中..."
+                                } else {
+                                    "搜索"
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // 状态展示
             if *searcher.searching.read() {
-                p { class: "text-xs text-slate-500", "搜索中..." }
+                div { class: "flex items-center gap-2 text-blue-600",
+                    span { class: "w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" }
+                    span { class: "text-xs", "正在搜索..." }
+                }
             }
             if let Some(ref err) = *searcher.error.read() {
                 div { class: "p-3 bg-red-50 rounded-lg border border-red-100",
@@ -48,8 +96,43 @@ pub fn VectorSearchPanel() -> Element {
             if let Some(ref result) = *searcher.result.read() {
                 div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
                     h3 { class: "text-sm font-semibold text-slate-800 mb-3", "搜索结果" }
-                    p { class: "text-xs text-slate-500",
+                    p { class: "text-xs text-slate-500 mb-3",
                         {format!("找到 {} 条结果，耗时 {}ms", result.results.len(), result.search_time_ms)}
+                    }
+                    // 显示搜索结果列表
+                    if result.results.is_empty() {
+                        div { class: "p-4 bg-slate-50 rounded-lg text-center",
+                            p { class: "text-xs text-slate-500 italic", "没有找到匹配的结果" }
+                        }
+                    } else {
+                        div { class: "space-y-2 max-h-96 overflow-y-auto",
+                            for (i, item) in result.results.iter().enumerate() {
+                                div {
+                                    key: "{i}",
+                                    class: "p-3 bg-slate-50 rounded-lg border border-slate-100",
+                                    div { class: "flex items-center justify-between mb-2",
+                                        span { class: "text-xs font-medium text-slate-700",
+                                            "#{i + 1} - {item.chunk_id}"
+                                        }
+                                        span { class: "text-xs text-blue-600 font-mono",
+                                            {format!("相似度: {:.4}", item.score)}
+                                        }
+                                    }
+                                    if let Some(ref content) = item.content {
+                                        p { class: "text-sm text-slate-800 whitespace-pre-wrap break-words",
+                                            {content.clone()}
+                                        }
+                                    }
+                                    if !item.metadata.is_empty() {
+                                        div { class: "mt-2 pt-2 border-t border-slate-200",
+                                            p { class: "text-xs text-slate-500 font-mono overflow-x-auto",
+                                                {serde_json::to_string(&item.metadata).unwrap_or_default()}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -256,6 +339,128 @@ pub fn LiveSubscriptionPanel() -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 内容索引面板组件
+#[component]
+pub fn ContentIndexPanel() -> Element {
+    let mut indexer = use_content_indexer();
+
+    let mut content_text = use_signal(String::new);
+    let mut source_type = use_signal(|| "manual".to_string());
+    // 使用 web_sys 获取时间戳，兼容 WASM 环境
+    let mut source_id = use_signal(|| {
+        let timestamp = web_sys::js_sys::Date::now() as u64;
+        format!("doc_{}", timestamp)
+    });
+
+    let is_indexing = *indexer.indexing.read();
+
+    rsx! {
+        section { class: "space-y-3",
+            header { class: "flex flex-col gap-1",
+                h2 { class: "text-lg font-semibold text-slate-900", "内容索引" }
+                p { class: "text-xs text-slate-500", "添加文本内容到向量索引，用于语义搜索" }
+            }
+            // 索引表单
+            div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
+                div { class: "space-y-3",
+                    div {
+                        label { class: "block text-xs text-slate-500 mb-1", "内容文本" }
+                        textarea {
+                            class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none",
+                            rows: "4",
+                            placeholder: "输入要索引的内容（至少10个字符）...",
+                            value: "{content_text}",
+                            disabled: is_indexing,
+                            oninput: move |evt| content_text.set(evt.value().clone())
+                        }
+                    }
+                    div { class: "grid grid-cols-2 gap-4",
+                        div {
+                            label { class: "block text-xs text-slate-500 mb-1", "来源类型" }
+                            select {
+                                class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
+                                disabled: is_indexing,
+                                value: "{source_type}",
+                                onchange: move |evt| source_type.set(evt.value().clone()),
+                                option { value: "manual", "手动输入" }
+                                option { value: "document", "文档" }
+                                option { value: "note", "笔记" }
+                                option { value: "faq", "FAQ" }
+                                option { value: "knowledge", "知识库" }
+                            }
+                        }
+                        div {
+                            label { class: "block text-xs text-slate-500 mb-1", "来源 ID" }
+                            input {
+                                r#type: "text",
+                                class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
+                                placeholder: "唯一标识符",
+                                value: "{source_id}",
+                                disabled: is_indexing,
+                                oninput: move |evt| source_id.set(evt.value().clone())
+                            }
+                        }
+                    }
+                    div { class: "flex justify-end",
+                        button {
+                            class: if is_indexing {
+                                "px-4 py-2 text-sm font-medium text-white bg-green-400 rounded-lg cursor-not-allowed"
+                            } else {
+                                "px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+                            },
+                            disabled: is_indexing,
+                            onclick: move |_| {
+                                let content = content_text.read().clone();
+                                let stype = source_type.read().clone();
+                                let sid = source_id.read().clone();
+                                spawn(async move {
+                                    indexer.index_content(content, stype, sid, None).await;
+                                });
+                            },
+                            if is_indexing {
+                                "索引中..."
+                            } else {
+                                "添加到索引"
+                            }
+                        }
+                    }
+                }
+            }
+            // 状态展示
+            if *indexer.indexing.read() {
+                div { class: "flex items-center gap-2 text-green-600",
+                    span { class: "w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin" }
+                    span { class: "text-xs", "正在生成嵌入向量并索引..." }
+                }
+            }
+            if let Some(ref err) = *indexer.error.read() {
+                div { class: "p-3 bg-red-50 rounded-lg border border-red-100",
+                    p { class: "text-sm text-red-700", "{err}" }
+                }
+            }
+            if let Some(ref result) = *indexer.last_result.read() {
+                div { class: "rounded-lg border border-green-200 bg-green-50 p-4 shadow-sm",
+                    h3 { class: "text-sm font-semibold text-green-800 mb-2", "索引成功" }
+                    div { class: "space-y-1 text-xs text-green-700",
+                        p {
+                            span { class: "font-medium", "Chunk ID: " }
+                            span { class: "font-mono", "{result.chunk_id}" }
+                        }
+                        p {
+                            span { class: "font-medium", "内容长度: " }
+                            span { "{result.content_length} 字符" }
+                        }
+                        p {
+                            span { class: "font-medium", "嵌入维度: " }
+                            span { "{result.embedding_dim}" }
                         }
                     }
                 }

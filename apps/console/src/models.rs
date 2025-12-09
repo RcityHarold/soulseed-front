@@ -516,8 +516,9 @@ pub struct DfrExplainSection {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AceExplainSection {
+    // sync_point 可以是 SyncPointKind 枚举或字符串，使用 Value 来兼容
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync_point: Option<SyncPointKind>,
+    pub sync_point: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degradation_reason: Option<String>,
 }
@@ -1433,6 +1434,39 @@ pub struct VectorSearchResult {
     pub score: f32,
     pub content: Option<String>,
     pub metadata: HashMap<String, Value>,
+}
+
+/// 内容索引请求
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndexContentRequest {
+    /// 要索引的文本内容
+    pub content: String,
+    /// 内容来源类型 (如 "document", "note", "manual")
+    pub source_type: String,
+    /// 内容来源 ID
+    pub source_id: String,
+    /// 关联的旅程 ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journey_id: Option<String>,
+    /// 关联的会话 ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// 额外元数据
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+/// 内容索引响应
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndexContentResponse {
+    /// 生成的 chunk ID
+    pub chunk_id: String,
+    /// 索引状态
+    pub status: String,
+    /// 内容长度
+    pub content_length: usize,
+    /// 嵌入维度
+    pub embedding_dim: u32,
 }
 
 /// 时序聚合查询

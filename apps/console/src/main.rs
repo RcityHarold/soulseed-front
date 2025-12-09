@@ -27,7 +27,7 @@ use ui::graph_enhanced::GraphEnhancedPanel;
 use ui::interaction::InteractionPanel;
 use ui::metacognition::MetacognitionPanel;
 use ui::notifications::NotificationCenter;
-use ui::surreal::{TimeSeriesPanel, VectorSearchPanel};
+use ui::surreal::{ContentIndexPanel, TimeSeriesPanel, VectorSearchPanel};
 use ui::timeline::TimelineView;
 use ui::tools::ToolTracePanel;
 use ui::version_chain::VersionChainPanel;
@@ -163,6 +163,10 @@ fn Dashboard() -> Element {
                     // 时序分析
                     div { class: "bg-white rounded-lg p-4 shadow",
                         TimeSeriesPanel {}
+                    }
+                    // 内容索引
+                    div { class: "bg-white rounded-lg p-4 shadow",
+                        ContentIndexPanel {}
                     }
                     // 向量搜索
                     div { class: "bg-white rounded-lg p-4 shadow",
