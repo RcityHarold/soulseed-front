@@ -39,7 +39,7 @@ pub fn VectorSearchPanel() -> Element {
                             oninput: move |evt| query_text.set(evt.value().clone())
                         }
                     }
-                    div { class: "flex items-center gap-4",
+                    div { class: "flex items-end gap-4",
                         div { class: "flex-1",
                             label { class: "block text-xs text-slate-500 mb-1", "返回数量 (Top K)" }
                             input {
@@ -56,26 +56,25 @@ pub fn VectorSearchPanel() -> Element {
                                 }
                             }
                         }
-                        div { class: "flex-1 flex items-end",
-                            button {
-                                class: if is_searching {
-                                    "w-full px-4 py-2 text-sm font-medium text-white bg-blue-400 rounded-lg cursor-not-allowed"
-                                } else {
-                                    "w-full px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-                                },
-                                disabled: is_searching,
-                                onclick: move |_| {
-                                    let query = query_text.read().clone();
-                                    let k = *top_k.read();
-                                    spawn(async move {
-                                        searcher.search(query, None, Some(k)).await;
-                                    });
-                                },
-                                if is_searching {
-                                    "搜索中..."
-                                } else {
-                                    "搜索"
-                                }
+                        button {
+                            class: "px-6 py-2 text-sm font-medium rounded-lg transition-colors shadow",
+                            style: if is_searching {
+                                "background-color: #9ca3af; color: white; cursor: not-allowed;"
+                            } else {
+                                "background-color: #4f46e5; color: white; cursor: pointer;"
+                            },
+                            disabled: is_searching,
+                            onclick: move |_| {
+                                let query = query_text.read().clone();
+                                let k = *top_k.read();
+                                spawn(async move {
+                                    searcher.search(query, None, Some(k)).await;
+                                });
+                            },
+                            if is_searching {
+                                "搜索中..."
+                            } else {
+                                "搜索"
                             }
                         }
                     }
@@ -411,10 +410,11 @@ pub fn ContentIndexPanel() -> Element {
                     }
                     div { class: "flex justify-end",
                         button {
-                            class: if is_indexing {
-                                "px-4 py-2 text-sm font-medium text-white bg-green-400 rounded-lg cursor-not-allowed"
+                            class: "px-4 py-2 text-sm font-medium rounded-lg transition-colors shadow",
+                            style: if is_indexing {
+                                "background-color: #9ca3af; color: white; cursor: not-allowed;"
                             } else {
-                                "px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+                                "background-color: #16a34a; color: white; cursor: pointer;"
                             },
                             disabled: is_indexing,
                             onclick: move |_| {
