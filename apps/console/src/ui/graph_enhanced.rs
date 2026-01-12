@@ -4,15 +4,81 @@
 
 use dioxus::prelude::*;
 
-use crate::hooks::version_chain::use_graph_node;
 use crate::models::{GraphEdgeRef, GraphNodeDetail};
+use crate::state::use_app_state;
+use crate::{API_CLIENT, APP_CONFIG};
+
+/// 图谱节点查询状态
+#[derive(Clone, Debug, Default)]
+struct NodeQueryState {
+    loading: bool,
+    error: Option<String>,
+    node: Option<GraphNodeDetail>,
+}
 
 /// 图谱增强面板组件
 #[component]
 pub fn GraphEnhancedPanel() -> Element {
-    let mut node_id = use_signal(|| String::new());
+    let state_store = use_app_state();
+    let mut node_id_input = use_signal(|| String::new());
+    let mut query_state = use_signal(NodeQueryState::default);
 
-    let node_state = use_graph_node(node_id.read().clone());
+    // 查询按钮点击处理
+    let on_search = move |_| {
+        let current_id = node_id_input.read().clone();
+
+        if current_id.is_empty() {
+            return;
+        }
+
+        // 获取 tenant_id
+        let snapshot = state_store.read();
+        let tenant_id = snapshot.tenant_id.clone();
+        drop(snapshot);
+
+        let tenant = tenant_id.or_else(|| {
+            APP_CONFIG
+                .get()
+                .and_then(|cfg| cfg.default_tenant_id.clone())
+        });
+
+        let Some(tenant) = tenant else {
+            query_state.write().error = Some("请先选择租户".into());
+            return;
+        };
+
+        let Some(client) = API_CLIENT.get().cloned() else {
+            query_state.write().error = Some("API 客户端未初始化".into());
+            return;
+        };
+
+        // 设置加载状态
+        query_state.write().loading = true;
+        query_state.write().error = None;
+
+        // 发起异步请求
+        spawn(async move {
+            tracing::info!("开始查询图谱节点: tenant={}, node_id={}", tenant, current_id);
+
+            match client
+                .get_graph_node::<GraphNodeDetail>(&tenant, &current_id)
+                .await
+            {
+                Ok(env) => {
+                    tracing::info!("图谱节点查询成功: {:?}", env.data);
+                    let mut state = query_state.write();
+                    state.node = env.data;
+                    state.loading = false;
+                }
+                Err(err) => {
+                    tracing::error!("图谱节点加载失败: {err}");
+                    let mut state = query_state.write();
+                    state.error = Some(format!("加载失败: {err}"));
+                    state.loading = false;
+                }
+            }
+        });
+    };
 
     rsx! {
         section { class: "space-y-3",
@@ -22,23 +88,35 @@ pub fn GraphEnhancedPanel() -> Element {
             }
             // 搜索面板
             div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
-                div { class: "flex gap-2",
-                    input {
-                        r#type: "text",
-                        class: "flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
-                        placeholder: "输入节点 ID...",
-                        value: "{node_id}",
-                        oninput: move |evt| node_id.set(evt.value().clone())
+                div { class: "flex gap-2 items-end",
+                    div { class: "flex-1",
+                        label { class: "block text-xs text-slate-500 mb-1", "节点 ID" }
+                        input {
+                            r#type: "text",
+                            class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
+                            placeholder: "输入节点 ID...",
+                            value: "{node_id_input}",
+                            oninput: move |evt| node_id_input.set(evt.value().clone())
+                        }
+                    }
+                    div {
+                        button {
+                            class: "px-4 py-2 text-sm font-medium rounded-lg focus:outline-none",
+                            style: "background-color: #2563eb; color: white; min-width: 80px;",
+                            disabled: node_id_input.read().is_empty(),
+                            onclick: on_search,
+                            "查询"
+                        }
                     }
                 }
             }
             // 节点详情
             {
-                let state = node_state.read();
+                let state = query_state.read();
                 if state.loading {
                     rsx! { p { class: "text-xs text-slate-500", "正在加载节点详情..." } }
                 } else if let Some(ref err) = state.error {
-                    rsx! { p { class: "text-xs text-red-500", "加载失败: {err}" } }
+                    rsx! { p { class: "text-xs text-red-500", "{err}" } }
                 } else if let Some(ref node) = state.node {
                     rsx! {
                         div { class: "space-y-4",

@@ -4,20 +4,83 @@
 
 use dioxus::prelude::*;
 
-use crate::hooks::version_chain::use_version_chain;
 use crate::models::{VersionChainSummary, VersionEntry};
+use crate::state::use_app_state;
+use crate::{API_CLIENT, APP_CONFIG};
+
+/// 版本链查询状态
+#[derive(Clone, Debug, Default)]
+struct QueryState {
+    loading: bool,
+    error: Option<String>,
+    chain: Option<VersionChainSummary>,
+}
 
 /// 版本链面板组件
 #[component]
 pub fn VersionChainPanel() -> Element {
-    let mut entity_type = use_signal(|| "dialogue".to_string());
-    let mut entity_id = use_signal(|| String::new());
+    let state_store = use_app_state();
+    let mut entity_type = use_signal(|| "dialogue_event".to_string());
+    let mut entity_id_input = use_signal(|| String::new());
+    let mut query_state = use_signal(QueryState::default);
 
-    // 使用实际输入的值调用 hook
-    let chain_state = use_version_chain(
-        entity_type.read().clone(),
-        entity_id.read().clone(),
-    );
+    // 查询按钮点击处理
+    let on_search = move |_| {
+        let current_type = entity_type.read().clone();
+        let current_id = entity_id_input.read().clone();
+
+        if current_id.is_empty() {
+            return;
+        }
+
+        // 获取 tenant_id
+        let snapshot = state_store.read();
+        let tenant_id = snapshot.tenant_id.clone();
+        drop(snapshot);
+
+        let tenant = tenant_id.or_else(|| {
+            APP_CONFIG
+                .get()
+                .and_then(|cfg| cfg.default_tenant_id.clone())
+        });
+
+        let Some(tenant) = tenant else {
+            query_state.write().error = Some("请先选择租户".into());
+            return;
+        };
+
+        let Some(client) = API_CLIENT.get().cloned() else {
+            query_state.write().error = Some("API 客户端未初始化".into());
+            return;
+        };
+
+        // 设置加载状态
+        query_state.write().loading = true;
+        query_state.write().error = None;
+
+        // 发起异步请求
+        spawn(async move {
+            tracing::info!("开始查询版本链: tenant={}, type={}, id={}", tenant, current_type, current_id);
+
+            match client
+                .get_version_chain_summary::<VersionChainSummary>(&tenant, &current_type, &current_id)
+                .await
+            {
+                Ok(env) => {
+                    tracing::info!("版本链查询成功: {:?}", env.data);
+                    let mut state = query_state.write();
+                    state.chain = env.data;
+                    state.loading = false;
+                }
+                Err(err) => {
+                    tracing::error!("版本链加载失败: {err}");
+                    let mut state = query_state.write();
+                    state.error = Some(format!("加载失败: {err}"));
+                    state.loading = false;
+                }
+            }
+        });
+    };
 
     rsx! {
         section { class: "space-y-3",
@@ -27,17 +90,17 @@ pub fn VersionChainPanel() -> Element {
             }
             // 搜索面板
             div { class: "rounded-lg border border-slate-200 bg-white p-4 shadow-sm",
-                div { class: "flex gap-3",
+                div { class: "flex gap-3 items-end",
                     div { class: "w-32",
                         label { class: "block text-xs text-slate-500 mb-1", "实体类型" }
                         select {
                             class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
                             value: "{entity_type}",
                             onchange: move |evt| entity_type.set(evt.value().clone()),
-                            option { value: "dialogue", "对话" }
-                            option { value: "awareness", "觉知" }
-                            option { value: "context", "上下文" }
-                            option { value: "decision", "决策" }
+                            option { value: "dialogue_event", "对话事件" }
+                            option { value: "session", "会话" }
+                            option { value: "message", "消息" }
+                            option { value: "artifact", "制品" }
                         }
                     }
                     div { class: "flex-1",
@@ -45,20 +108,29 @@ pub fn VersionChainPanel() -> Element {
                         input {
                             r#type: "text",
                             class: "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500",
-                            placeholder: "输入实体 ID...",
-                            value: "{entity_id}",
-                            oninput: move |evt| entity_id.set(evt.value().clone())
+                            placeholder: "输入实体 ID（如：evt_123456）...",
+                            value: "{entity_id_input}",
+                            oninput: move |evt| entity_id_input.set(evt.value().clone())
+                        }
+                    }
+                    div {
+                        button {
+                            class: "px-4 py-2 text-sm font-medium rounded-lg focus:outline-none",
+                            style: "background-color: #2563eb; color: white; min-width: 80px;",
+                            disabled: entity_id_input.read().is_empty(),
+                            onclick: on_search,
+                            "查询"
                         }
                     }
                 }
             }
             // 版本链展示
             {
-                let state = chain_state.read();
+                let state = query_state.read();
                 if state.loading {
                     rsx! { p { class: "text-xs text-slate-500", "正在加载版本链..." } }
                 } else if let Some(ref err) = state.error {
-                    rsx! { p { class: "text-xs text-red-500", "加载失败: {err}" } }
+                    rsx! { p { class: "text-xs text-red-500", "{err}" } }
                 } else if let Some(ref chain) = state.chain {
                     rsx! { {render_version_chain(chain)} }
                 } else {

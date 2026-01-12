@@ -18,20 +18,39 @@ pub struct VersionChainState {
     pub diff: Option<VersionDiff>,
 }
 
+/// 版本链查询返回类型
+pub struct VersionChainHook {
+    pub state: Signal<VersionChainState>,
+    pub fetch: Signal<Box<dyn Fn(String, String) + 'static>>,
+}
+
 /// 版本链摘要 Hook
-pub fn use_version_chain(entity_type: String, entity_id: String) -> Signal<VersionChainState> {
+pub fn use_version_chain(_entity_type: String, _entity_id: String) -> Signal<VersionChainState> {
     let state_store = use_app_state();
     let mut state = use_signal(VersionChainState::default);
+
+    // 使用 Signal 存储查询参数，点击按钮时更新
+    let mut query_params: Signal<Option<(String, String)>> = use_signal(|| None);
+
+    // 提供一个回调让外部触发查询
+    let trigger_fetch = use_callback(move |params: (String, String)| {
+        query_params.set(Some(params));
+    });
+
+    // 将回调存储到全局以便面板组件访问
+    use_context_provider(|| trigger_fetch);
 
     let snapshot = state_store.read();
     let tenant_id = snapshot.tenant_id.clone();
     drop(snapshot);
 
-    use_future(use_reactive!(|(tenant_id,)| {
-        let entity_type = entity_type.clone();
-        let entity_id = entity_id.clone();
+    use_future(use_reactive!(|(tenant_id, query_params)| {
         async move {
             TimeoutFuture::new(0).await;
+
+            let Some((entity_type, entity_id)) = query_params.read().clone() else {
+                return;
+            };
 
             let tenant = tenant_id.clone().or_else(|| {
                 APP_CONFIG
@@ -45,6 +64,9 @@ pub fn use_version_chain(entity_type: String, entity_id: String) -> Signal<Versi
             };
 
             if entity_id.is_empty() {
+                state.write().chain = None;
+                state.write().error = None;
+                state.write().loading = false;
                 return;
             }
 
@@ -53,6 +75,7 @@ pub fn use_version_chain(entity_type: String, entity_id: String) -> Signal<Versi
                 return;
             };
 
+            tracing::info!("开始查询版本链: type={}, id={}", entity_type, entity_id);
             state.write().loading = true;
             state.write().error = None;
 
@@ -61,6 +84,7 @@ pub fn use_version_chain(entity_type: String, entity_id: String) -> Signal<Versi
                 .await
             {
                 Ok(env) => {
+                    tracing::info!("版本链查询成功");
                     state.write().chain = env.data;
                 }
                 Err(err) => {
